@@ -1,0 +1,389 @@
+/**
+ * Meta Society — Simulation Lab engine: shared types and domain vocabularies.
+ *
+ * Design law (see SIMULATION_LAB_SPEC.md §2): this engine is DECISIVE, not generative.
+ * Every number it returns is a deterministic function of
+ *   (population, policy vector, engine version, seed).
+ * No language model produces an outcome, a magnitude, or a narrative.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Spatial + demographic vocabularies                                  */
+/* ------------------------------------------------------------------ */
+
+export const ZONES = ["east", "west", "north", "south"] as const;
+export type Zone = (typeof ZONES)[number];
+
+export const SEXES = ["M", "F"] as const;
+export type Sex = (typeof SEXES)[number];
+
+export const AGE_BANDS = ["0-6", "7-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65+"] as const;
+export type AgeBand = (typeof AGE_BANDS)[number];
+
+export const INCOME_CLASSES = ["bpl", "low", "lower_middle", "middle", "upper_middle", "high"] as const;
+export type IncomeClass = (typeof INCOME_CLASSES)[number];
+
+/** Display labels for the income bands. */
+export const INCOME_CLASS_LABELS: Record<IncomeClass, string> = {
+  bpl: "Below poverty line",
+  low: "Low",
+  lower_middle: "Lower middle",
+  middle: "Middle",
+  upper_middle: "Upper middle",
+  high: "High",
+};
+
+export const SECTORS = [
+  "agriculture",
+  "manufacturing",
+  "services",
+  "pilgrimage_tourism",
+  "construction",
+  "trade",
+  "public_admin",
+  "informal_other",
+] as const;
+export type Sector = (typeof SECTORS)[number];
+
+export const EDUCATION_LEVELS = ["none", "primary", "secondary", "higher_secondary", "graduate"] as const;
+export type EducationLevel = (typeof EDUCATION_LEVELS)[number];
+
+export const WORKER_STATUSES = ["non_worker", "main", "marginal"] as const;
+export type WorkerStatus = (typeof WORKER_STATUSES)[number];
+
+export const EMPLOYMENT_STATUSES = ["unemployed", "informal", "formal"] as const;
+export type EmploymentStatus = (typeof EMPLOYMENT_STATUSES)[number];
+
+export const QUALITY_LEVELS = ["poor", "adequate", "good"] as const;
+export type QualityLevel = (typeof QUALITY_LEVELS)[number];
+
+export const SENTIMENTS = ["negative", "neutral", "positive"] as const;
+export type Sentiment = (typeof SENTIMENTS)[number];
+
+export const POLICY_TYPES = ["none", "tax", "subsidy", "regulation", "housing", "labor", "education"] as const;
+export type PolicyType = (typeof POLICY_TYPES)[number];
+
+/** How a given field was obtained. Rendered in the UI's provenance panel. */
+export const PROVENANCE_TAGS = ["census2011", "estimated", "modelled", "assumed"] as const;
+export type ProvenanceTag = (typeof PROVENANCE_TAGS)[number];
+
+/* ------------------------------------------------------------------ */
+/* Population                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A citizen agent, stored as struct-of-arrays (see `Population`).
+ * The agent is a PERSON living in a HOUSEHOLD in a WARD in a ZONE in a TOWN.
+ * It is never a town, never a zone, and never a "representative citizen".
+ */
+export interface Population {
+  townId: string;
+  townName: string;
+  size: number;
+  households: number;
+  seed: number;
+  /** FNV-1a hash over the generation inputs. Changes if any input changes. */
+  manifest: string;
+  generatorVersion: string;
+
+  // --- static attributes (never change during a run) ---
+  age: Uint8Array;
+  ageBand: Uint8Array;
+  sex: Uint8Array;
+  ward: Uint8Array;
+  zone: Uint8Array;
+  household: Uint32Array;
+  scSt: Uint8Array; // 0 = general, 1 = SC, 2 = ST
+  literate: Uint8Array;
+  education: Uint8Array;
+  workerStatus: Uint8Array;
+  sector: Uint8Array;
+  /** Household earning class, derived from household earning capacity per capita. */
+  incomeClass: Uint8Array;
+  /** Monthly individual earnings in INR (0 for non-workers). */
+  income: Float64Array;
+
+  // --- modelled attributes ---
+  housing: Uint8Array;
+  healthInsurance: Uint8Array;
+  infra: Uint8Array;
+  informality: Uint8Array;
+  /** Per-sector automation/augmentation exposure mean, 0..1. */
+  taskExposure: Float64Array;
+
+  // --- latent behavioural parameters (sampled once, fixed within a scenario) ---
+  riskAversion: Float64Array;
+  timePreference: Float64Array;
+  mobility: Float64Array;
+  socialInfluence: Float64Array;
+
+  // --- dynamic state (mutates across simulation periods) ---
+  active: Uint8Array; // 0 once an agent has migrated out
+  employed: Uint8Array;
+  employmentStatus: Uint8Array;
+  /** Stock: how many months of essential spending the household can absorb. */
+  savingsMonths: Float64Array;
+  sentiment: Uint8Array;
+  trustInGov: Float64Array;
+  protestPropensity: Float64Array;
+  migrationIntent: Float64Array;
+  skillRelevance: Float64Array;
+  /** Sampled per-period sector output state: 0 declining, 1 stable, 2 rising. */
+  outputState: Uint8Array;
+
+  /** Household-level aggregates, recomputed from members. */
+  householdSize: Uint32Array;
+  householdIncome: Float64Array;
+}
+
+/* ------------------------------------------------------------------ */
+/* Policy vector                                                       */
+/* ------------------------------------------------------------------ */
+
+export interface PolicyAllocation {
+  housing: number;
+  education: number;
+  employment: number;
+}
+
+/** The real-valued vector Differential Evolution searches over (§11.1). */
+export interface PolicyParams {
+  /** 0..1 share of the instrument's maximum strength. */
+  intensity: number;
+  /** Total budget in INR. */
+  budget: number;
+  /** 3..60 months. */
+  durationMonths: number;
+  allocation: PolicyAllocation;
+}
+
+export interface PolicyVector extends PolicyParams {
+  type: PolicyType;
+  name: string;
+}
+
+/** Anthropic-Economic-Scenarios-style levers (§7.3). */
+export interface ScenarioLevers {
+  /** 0..1 share of knowledge tasks AI can perform. */
+  capability: number;
+  /** 0..1 share of firms/agents that adopt it. */
+  adoption: number;
+  /** 0..1 share of adopted work that runs without a human. */
+  autonomy: number;
+  /** 1..10 output multiplier on augmented/automated tasks. */
+  productivity: number;
+  /** Months for a displaced worker to find new work. */
+  reallocationMonths: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Bayesian network                                                    */
+/* ------------------------------------------------------------------ */
+
+export type BnNodeKind = "root" | "micro" | "town" | "feedback";
+
+export interface BnNode {
+  id: string;
+  domain: string[];
+  parents: string[];
+  /** Which scheduling layer the node belongs to (see bn.ts SCHEDULE). */
+  kind: BnNodeKind;
+}
+
+export interface Cpt {
+  node: string;
+  /**
+   * Keyed by parent state indices joined with "|" (empty string for a root).
+   * Value is a distribution over the node's own domain.
+   */
+  table: Record<string, number[]>;
+  marginal: number[];
+  source: string;
+  /** estimated_from_population | prior:literature | prior:assumption */
+  provenance: string;
+}
+
+export interface Bn {
+  version: string;
+  nodes: Record<string, BnNode>;
+  /** Topological order within the micro + feedback layers. */
+  order: string[];
+  cpts: Record<string, Cpt>;
+}
+
+export interface CausalFactor {
+  node: string;
+  /** Expected total-variation in the target's distribution when this node is fixed. */
+  influence: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Decisions (System One layer, §8)                                    */
+/* ------------------------------------------------------------------ */
+
+export interface Decision<T = string> {
+  answer: T;
+  distribution: Record<string, number>;
+  confidence: number;
+}
+
+/**
+ * A typed question with a declared answer set.
+ *
+ * `signals` carries the numeric read of the situation (0..1) so a deterministic
+ * rule-based engine can answer meaningfully, while model-backed engines
+ * serialise the same signals into the state text they send.
+ */
+export interface ChoiceQuestion<T extends string = string> {
+  key: string;
+  options: readonly T[];
+  prompt: string;
+  /** The situation read, 0..1. */
+  value: number;
+  /** How much each option is favoured by the situation. */
+  lifts?: number[];
+}
+
+export interface ScoreQuestion {
+  key: string;
+  rubric: readonly string[];
+  prompt: string;
+  /** Where the situation sits on the rubric, 0..1. */
+  value: number;
+}
+
+export interface NoulResult {
+  key: string;
+  probability: number;
+  confidence: number;
+}
+
+/** A `Noul` primitive: probability that a statement about the state is true. */
+export interface NoulQuestion {
+  key: string;
+  statement: string;
+  /** The situation read, 0..1, interpreted as P(statement is true). */
+  value: number;
+}
+
+export interface DecisionEngine {
+  readonly name: string;
+  choose<T extends string>(state: string, q: ChoiceQuestion<T>): Promise<Decision<T>>;
+  score(state: string, q: ScoreQuestion): Promise<Decision>;
+  evaluate(state: string, statements: NoulQuestion[]): Promise<NoulResult[]>;
+  /** Reset per-run counters. */
+  reset(): void;
+  stats(): DecisionStats;
+}
+
+export interface DecisionStats {
+  engine: string;
+  calls: number;
+  /** Fraction of decisions below the automation threshold (§8.2 U5). */
+  escalationRate: number;
+  meanConfidence: number;
+  fallbackUsed: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/* Results                                                             */
+/* ------------------------------------------------------------------ */
+
+export const METRIC_KEYS = [
+  "gdpGrowthPct",
+  "employmentRatePct",
+  "meanIncome",
+  "wageIndex",
+  "inflationPct",
+  "happinessIndex",
+  "gini",
+  "protestRisk",
+  "migrationOutflowPct",
+] as const;
+export type MetricKey = (typeof METRIC_KEYS)[number];
+
+export interface Interval {
+  p05: number;
+  p50: number;
+  p95: number;
+}
+
+export interface PeriodResult {
+  period: number;
+  month: number;
+  metrics: Record<MetricKey, number>;
+  /** Intensity actually applied this period after lag ramp + budget exhaustion. */
+  appliedIntensity: number;
+  cumulativeSpend: number;
+}
+
+export interface ValidationCheck {
+  group: "population" | "network" | "aggregation" | "optimization" | "reproducibility" | "decisions";
+  check: string;
+  passed: boolean;
+  observed: string;
+  expected: string;
+}
+
+export interface GuardrailCheck {
+  check: string;
+  passed: boolean;
+  note?: string;
+  confidence?: number;
+}
+
+export interface ParetoCandidate {
+  params: PolicyParams;
+  objectives: Record<string, number>;
+  selected: boolean;
+}
+
+export interface SimulationRequest {
+  townId: string;
+  policy: PolicyVector;
+  scenario?: ScenarioLevers;
+  objectives?: string[];
+  mode: "single" | "optimize";
+  seed: number;
+  bnVersion: string;
+  zoneFilter?: Zone | "all";
+}
+
+export interface TrajectoryPoint {
+  month: number;
+  baseline: number;
+  simulated: number;
+}
+
+export interface SimulationResult {
+  runId: string;
+  seed: number;
+  engine: { bn: string; de: string | null; decision: string };
+  populationManifest: string;
+  populationSize: number;
+  periods: number;
+
+  point: Record<MetricKey, number>;
+  intervals: Record<MetricKey, Interval>;
+  byZone: Record<Zone, { population: number; metrics: Record<MetricKey, Interval> }>;
+  baseline: Record<MetricKey, number>;
+
+  trajectories: Record<MetricKey, TrajectoryPoint[]>;
+  distributions: {
+    incomeBefore: { bucket: string; count: number }[];
+    incomeAfter: { bucket: string; count: number }[];
+    sentimentBefore: { label: string; count: number }[];
+    sentimentAfter: { label: string; count: number }[];
+  };
+
+  paretoFront: ParetoCandidate[];
+  convergence: { generation: number; best: number; mean: number; spread: number }[];
+  causalAttribution: CausalFactor[];
+  trajectoryTrace: PeriodResult[];
+
+  alerts: { month: number; severity: "warning" | "danger" | "info"; metric: MetricKey; message: string }[];
+  guardrails: GuardrailCheck[];
+  decisionStats: DecisionStats;
+  validation: ValidationCheck[];
+  warnings: string[];
+}

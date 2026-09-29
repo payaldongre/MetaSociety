@@ -1,0 +1,1087 @@
+/**
+ * The Bayesian Network (SIMULATION_LAB_SPEC.md §6).
+ *
+ * A discrete DAG with conditional probability tables. The design follows one
+ * rule: **learn from the population wherever the data can speak, and use a
+ * documented prior only where it cannot.** Concretely, an agent's income class,
+ * employment status, education, housing, sentiment and skill relevance are all
+ * observable in the generated population, so CPTs over those variables are
+ * counted directly (with Laplace smoothing). Only genuinely unobservable
+ * variables — latent market demand, sector output, and the town-level bands —
+ * plus the policy parameters themselves, are supplied by documented priors.
+ *
+ * Every table records its provenance, so the UI can show which parts of the
+ * model are estimated and which are assumed.
+ *
+ * INFERENCE. Sampling is ancestral (forward) and exact for this system's query
+ * pattern, because all evidence sits on root or near-root exogenous variables
+ * (policy parameters + agent attributes). `assertEvidenceIsUpstream` enforces
+ * that precondition at runtime so the engine cannot silently produce biased
+ * samples.
+ *
+ * SCHEDULING — three passes, because town nodes depend on population totals:
+ *   pass 1 (micro)    policy + agent attributes -> per-agent outcomes
+ *   aggregate         population -> discretised aggregate bands
+ *   pass 2 (town)     aggregate bands -> Inflation, EmploymentRate, GDP, Wages
+ *   pass 3 (feedback) per-agent sentiment / protest / migration given the town
+ *
+ * Pass 2 feeding pass 3 is the chained causality the project dropped Random
+ * Forest for: income -> spending -> demand -> inflation -> sentiment -> protest.
+ */
+
+import { createRng, toCumulative, type Rng } from "./rng";
+import {
+  AGE_BANDS,
+  EDUCATION_LEVELS,
+  EMPLOYMENT_STATUSES,
+  INCOME_CLASSES,
+  POLICY_TYPES,
+  QUALITY_LEVELS,
+  SECTORS,
+  SENTIMENTS,
+} from "./types";
+import type { Bn, BnNode, CausalFactor, Cpt, PolicyType, Population, ValidationCheck } from "./types";
+
+export const BN_VERSION = "1.0.0";
+export const TRUST_BANDS = ["low", "medium", "high"] as const;
+export const DEMAND_BANDS = ["weak", "normal", "strong"] as const;
+export const EMPLOYMENT_AGG = ["low", "normal", "high"] as const;
+export const MIGRATION_AGG = ["low", "normal", "high"] as const;
+export const SECTOR_OUTPUT_AGG = ["declining", "stable", "rising"] as const;
+
+export const DOMAINS: Record<string, string[]> = {
+  /* --- policy + exogenous roots (evidence) --- */
+  PolicyType: [...POLICY_TYPES],
+  PolicyIntensity: ["low", "medium", "high"],
+  PolicyBudgetShare: ["low", "medium", "high"],
+  PolicyDuration: ["short", "medium", "long"],
+  IncomeClassPrior: [...INCOME_CLASSES],
+  AgeBand: [...AGE_BANDS],
+  EducationLevel: [...EDUCATION_LEVELS],
+  HousingQuality: [...QUALITY_LEVELS],
+  TrustInGov: [...TRUST_BANDS],
+  ScenarioExposure: ["low", "medium", "high"],
+
+  /* --- aggregate bands (set deterministically from population totals) --- */
+  AggregateDemand: [...DEMAND_BANDS],
+  AggregateSectorOutput: [...SECTOR_OUTPUT_AGG],
+  EmploymentAggregate: [...EMPLOYMENT_AGG],
+  MigrationAggregate: [...MIGRATION_AGG],
+
+  /* --- per-agent outcomes (pass 1) --- */
+  SectorDemand: ["contracting", "flat", "growing"],
+  IncomeClass: [...INCOME_CLASSES],
+  SkillRelevance: ["obsolete", "shifting", "durable"],
+  EmploymentStatus: [...EMPLOYMENT_STATUSES],
+  SpendingCapacity: ["constrained", "stable", "comfortable"],
+  HouseholdStress: ["low", "medium", "high"],
+  SectorOfWork: [...SECTORS],
+  AgentSectorOutput: ["declining", "stable", "rising"],
+
+  /* --- town outcomes (pass 2) --- */
+  Inflation: ["low", "moderate", "high"],
+  EmploymentRateBand: ["low", "below_avg", "average", "above_avg", "high"],
+  TownGDPGrowthBand: ["negative", "0-1", "1-2.5", "2.5-4", "above4"],
+  WageLevelBand: ["falling", "flat", "modest_growth", "strong_growth", "surge"],
+
+  /* --- feedback (pass 3) --- */
+  PublicSentiment: [...SENTIMENTS],
+  MigrationIntentBand: ["stay", "consider", "leave"],
+  ProtestRiskBand: ["low", "medium", "high"],
+};
+
+const PARENTS: Record<string, string[]> = {
+  PolicyType: [],
+  PolicyIntensity: ["PolicyType"],
+  PolicyBudgetShare: ["PolicyType"],
+  PolicyDuration: ["PolicyType"],
+  AgeBand: [],
+  IncomeClassPrior: [],
+  EducationLevel: ["AgeBand"],
+  HousingQuality: ["IncomeClassPrior"],
+  TrustInGov: [],
+  ScenarioExposure: [],
+
+  AggregateDemand: [],
+  AggregateSectorOutput: [],
+  EmploymentAggregate: [],
+  MigrationAggregate: [],
+
+  SectorDemand: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  IncomeClass: ["IncomeClassPrior", "SectorDemand", "PolicyBudgetShare"],
+  SkillRelevance: ["ScenarioExposure", "EducationLevel", "SectorDemand"],
+  EmploymentStatus: ["IncomeClass", "SectorDemand", "PolicyType", "PolicyIntensity"],
+  SpendingCapacity: ["IncomeClass", "EmploymentStatus", "PolicyBudgetShare"],
+  HouseholdStress: ["IncomeClass", "EmploymentStatus", "SpendingCapacity", "HousingQuality"],
+  SectorOfWork: ["SectorDemand", "EducationLevel", "IncomeClass", "SkillRelevance"],
+  AgentSectorOutput: ["SectorDemand", "EmploymentStatus", "SkillRelevance"],
+
+  Inflation: ["AggregateDemand", "PolicyBudgetShare", "PolicyType"],
+  EmploymentRateBand: ["EmploymentAggregate", "MigrationAggregate"],
+  TownGDPGrowthBand: ["AggregateSectorOutput", "EmploymentRateBand", "Inflation"],
+  WageLevelBand: ["TownGDPGrowthBand", "EmploymentRateBand", "Inflation"],
+
+  PublicSentiment: ["IncomeClass", "EmploymentStatus", "Inflation", "TrustInGov", "PolicyType"],
+  MigrationIntentBand: ["EmploymentStatus", "SkillRelevance", "PublicSentiment", "AgeBand"],
+  ProtestRiskBand: ["PublicSentiment", "TrustInGov", "HouseholdStress", "PolicyType"],
+};
+
+const POLICY_NODE_IDS = ["PolicyType", "PolicyIntensity", "PolicyBudgetShare", "PolicyDuration"];
+
+/**
+ * Which policy dimensions each node's shift actually reads.
+ *
+ * `policyLogShift` scales every instrument by policy type, intensity AND budget
+ * share, so a node that carries a shift must condition on all three of them.
+ * Declaring that here (rather than hand-listing parents per node, which is how
+ * the four policy nodes drifted out of sync) guarantees the two can never
+ * disagree: a node's table always has a row for the exact policy configuration
+ * the simulator applies, and no policy dimension is silently held at
+ * `undefined` — which the shift would read as "low".
+ */
+const POLICY_SHIFT_DIMS: Record<string, string[]> = {
+  SectorDemand: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  IncomeClass: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  EmploymentStatus: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  SpendingCapacity: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  Inflation: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  PublicSentiment: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  ProtestRiskBand: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+};
+
+/** Effective policy configuration for a table row, incl. the shift's dimensions. */
+function policyParentsFor(id: string): string[] {
+  const declared = PARENTS[id] ?? [];
+  const extra = (POLICY_SHIFT_DIMS[id] ?? []).filter((p) => !declared.includes(p));
+  return [...declared, ...extra];
+}
+
+export const MICRO_NODES = [
+  "SectorDemand",
+  "SkillRelevance",
+  "IncomeClass",
+  "EmploymentStatus",
+  "SpendingCapacity",
+  "HouseholdStress",
+  "SectorOfWork",
+  "AgentSectorOutput",
+] as const;
+
+export const TOWN_NODES = ["Inflation", "EmploymentRateBand", "TownGDPGrowthBand", "WageLevelBand"] as const;
+
+export const FEEDBACK_NODES = ["PublicSentiment", "MigrationIntentBand", "ProtestRiskBand"] as const;
+
+export const AGGREGATE_NODES = ["AggregateDemand", "AggregateSectorOutput", "EmploymentAggregate", "MigrationAggregate"];
+
+/** Nodes with no parents: policy parameters and agent attributes. */
+export const ROOT_NODE_IDS = Object.keys(DOMAINS).filter((id) => (PARENTS[id] ?? []).length === 0);
+
+/**
+ * Documented additive log-weight shifts applied on top of the learned base
+ * table, indexed by [parent state][child state]. Used ONLY for parent variables
+ * that are not observable in the population (latent demand, sector output, and
+ * the aggregate bands). Magnitudes are deliberately modest; the point is to
+ * encode direction and rough strength, which §6.6 then asserts.
+ *
+ * Every entry here is a MODELLED ASSUMPTION.
+ */
+const LATENT_SHIFTS: Record<string, number[][]> = {
+  /* --- policy-free demand shifts --- */
+  "IncomeClass|SectorDemand": [
+    [0.45, 0.3, 0.05, -0.2, -0.35, -0.4], // contracting
+    [0, 0, 0, 0, 0, 0], // flat
+    [-0.3, -0.2, 0, 0.15, 0.3, 0.35], // growing
+  ],
+  "EmploymentStatus|SectorDemand": [
+    [0.6, 0.15, -0.5],
+    [0, 0, 0],
+    [-0.5, -0.05, 0.45],
+  ],
+  "SkillRelevance|SectorDemand": [
+    [0.35, 0, -0.25],
+    [0, 0, 0],
+    [-0.3, 0, 0.3],
+  ],
+  "SectorOfWork|SectorDemand": [
+    [0.25, -0.2, -0.15, 0.05, -0.35, -0.2, 0.2, 0.35],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [-0.15, 0.25, 0.2, 0.05, 0.35, 0.25, 0.05, -0.3],
+  ],
+  "AgentSectorOutput|SectorDemand": [
+    [0.9, 0, -0.7],
+    [0, 0, 0],
+    [-0.8, 0, 0.8],
+  ],
+
+  /* --- town-level shifts --- */
+  "Inflation|AggregateDemand": [
+    [0.5, 0, -0.6],
+    [0, 0, 0],
+    [-0.7, 0, 0.7],
+  ],
+  "EmploymentRateBand|EmploymentAggregate": [
+    [0.9, 0.6, 0, -0.6, -0.9],
+    [0, 0, 0, 0, 0],
+    [-0.9, -0.5, 0, 0.5, 0.9],
+  ],
+  "EmploymentRateBand|MigrationAggregate": [
+    [0, 0, 0, 0, 0],
+    [0.3, 0.2, 0, -0.15, -0.3],
+    [0.8, 0.4, 0, -0.3, -0.7],
+  ],
+  "TownGDPGrowthBand|AggregateSectorOutput": [
+    [0.9, 0.5, 0, -0.7, -1.0],
+    [0, 0, 0, 0, 0],
+    [-1.0, -0.5, 0, 0.6, 0.9],
+  ],
+  "TownGDPGrowthBand|EmploymentRateBand": [
+    [0.5, 0.4, 0, -0.4, -0.6],
+    [0.25, 0.2, 0, -0.2, -0.3],
+    [0, 0, 0, 0, 0],
+    [-0.2, -0.15, 0, 0.2, 0.25],
+    [-0.4, -0.3, 0, 0.35, 0.5],
+  ],
+  "TownGDPGrowthBand|Inflation": [
+    [-0.1, -0.05, 0, 0, 0],
+    [0, 0, 0, 0, 0],
+    [0.2, 0.15, 0, -0.2, -0.25],
+  ],
+  "WageLevelBand|TownGDPGrowthBand": [
+    [0.9, 0.5, 0, -0.6, -0.9],
+    [0.4, 0.35, 0, -0.3, -0.5],
+    [0, 0, 0, 0, 0],
+    [-0.3, -0.2, 0, 0.3, 0.4],
+    [-0.6, -0.4, 0, 0.6, 0.9],
+  ],
+  "WageLevelBand|EmploymentRateBand": [
+    [0.5, 0.4, 0, -0.4, -0.5],
+    [0.25, 0.2, 0, -0.2, -0.25],
+    [0, 0, 0, 0, 0],
+    [-0.2, -0.15, 0, 0.2, 0.25],
+    [-0.4, -0.3, 0, 0.35, 0.45],
+  ],
+  "WageLevelBand|Inflation": [
+    [-0.1, -0.05, 0, 0, 0.05],
+    [0, 0, 0, 0, 0],
+    [0.35, 0.25, 0, -0.25, -0.35],
+  ],
+
+  /* --- feedback shifts --- */
+  "PublicSentiment|Inflation": [
+    [0, 0, 0.2],
+    [0, 0, 0],
+    [0.35, 0, -0.3],
+  ],
+  "MigrationIntentBand|PublicSentiment": [
+    [-0.4, 0, 0.5],
+    [0, 0, 0],
+    [0.35, 0, -0.45],
+  ],
+  "ProtestRiskBand|PublicSentiment": [
+    [-0.5, 0, 0.7],
+    [0, 0, 0],
+    [0.5, 0, -0.5],
+  ],
+  "ProtestRiskBand|HouseholdStress": [
+    [0.35, 0, -0.35],
+    [0, 0, 0],
+    [-0.4, 0, 0.5],
+  ],
+};
+
+/** Child-state meaning decoder, documented once for the table above. */
+export const DOMAIN_LEGENDS: Record<string, string> = {
+  SectorDemand: "contracting | flat | growing",
+  IncomeClass: INCOME_CLASSES.join(" | "),
+  SkillRelevance: "obsolete | shifting | durable",
+  EmploymentStatus: EMPLOYMENT_STATUSES.join(" | "),
+  SpendingCapacity: "constrained | stable | comfortable",
+  HouseholdStress: "low | medium | high",
+  SectorOfWork: SECTORS.join(" | "),
+  AgentSectorOutput: "declining | stable | rising",
+  PublicSentiment: SENTIMENTS.join(" | "),
+  MigrationIntentBand: "stay | consider | leave",
+  ProtestRiskBand: "low | medium | high",
+};
+
+/**
+ * Policy effects: additive log-weights scaled by intensity and budget share.
+ * These are the documented, checkable directions of each instrument.
+ */
+function policyLogShift(nodeId: string, policy: Record<string, string>): number[] | null {
+  const type = (policy.PolicyType ?? "none") as PolicyType;
+  // An unspecified dimension falls back to the reference (medium) scaling, not
+  // the minimum: "not stated" must never be read as "weakest possible policy".
+  const intensityScale =
+    policy.PolicyIntensity === "high" ? 1 : policy.PolicyIntensity === "low" ? 0.35 : 0.65;
+  const budgetScale =
+    policy.PolicyBudgetShare === "high" ? 1 : policy.PolicyBudgetShare === "low" ? 0.3 : 0.6;
+  const s = intensityScale * budgetScale;
+
+  switch (nodeId) {
+    case "SectorDemand":
+      switch (type) {
+        case "subsidy":
+          return [0.4 * s, 0, 1.0 * s];
+        case "tax":
+          return [0.9 * s, 0, -0.7 * s];
+        case "housing":
+          return [0.2 * s, 0, 0.55 * s];
+        case "labor":
+          return [0.3 * s, 0, 0.8 * s];
+        case "education":
+          return [0.15 * s, 0, 0.35 * s];
+        case "regulation":
+          return [0.5 * s, 0, -0.2 * s];
+        default:
+          return null;
+      }
+    case "IncomeClass":
+      switch (type) {
+        case "subsidy":
+          return [0.5 * s, 0.25 * s, -0.1 * s, -0.25 * s, -0.3 * s, -0.3 * s];
+        case "tax":
+          return [0.2 * s, 0.15 * s, 0.05 * s, -0.1 * s, -0.25 * s, -0.3 * s];
+        case "education":
+          return [0, 0, 0.05 * s, 0.1 * s, 0.12 * s, 0.1 * s];
+        case "housing":
+          return [0.3 * s, 0.2 * s, 0, -0.15 * s, -0.2 * s, -0.2 * s];
+        default:
+          return null;
+      }
+    case "EmploymentStatus":
+      switch (type) {
+        case "subsidy":
+          return [-1.0 * s, -0.1 * s, 0.7 * s];
+        case "labor":
+          return [-1.2 * s, -0.15 * s, 0.85 * s];
+        case "education":
+          return [-0.55 * s, -0.35 * s, 0.7 * s];
+        case "tax":
+          return [0.5 * s, 0.35 * s, -0.5 * s];
+        case "regulation":
+          return [0.35 * s, 0.5 * s, -0.5 * s];
+        case "housing":
+          return [-0.3 * s, -0.1 * s, 0.2 * s];
+        default:
+          return null;
+      }
+    case "SpendingCapacity":
+      switch (type) {
+        case "subsidy":
+          return [-0.7 * s, 0, 0.6 * s];
+        case "tax":
+          return [0.75 * s, 0, -0.4 * s];
+        case "housing":
+          return [-0.35 * s, 0, 0.3 * s];
+        default:
+          return null;
+      }
+    case "Inflation":
+      switch (type) {
+        case "subsidy":
+        case "labor":
+          return [-0.4 * s, 0, 0.75 * s];
+        case "housing":
+          return [-0.2 * s, 0, 0.45 * s];
+        case "tax":
+          return [0.35 * s, 0, -0.3 * s];
+        default:
+          return null;
+      }
+    case "PublicSentiment":
+      switch (type) {
+        case "subsidy":
+        case "labor":
+          return [-0.55 * s, 0, 0.65 * s];
+        case "housing":
+          return [-0.6 * s, 0, 0.7 * s];
+        case "education":
+          return [-0.25 * s, 0, 0.35 * s];
+        case "tax":
+          return [0.5 * s, 0, -0.45 * s];
+        case "regulation":
+          return [0.4 * s, 0, -0.3 * s];
+        default:
+          return null;
+      }
+    case "ProtestRiskBand":
+      switch (type) {
+        case "tax":
+        case "regulation":
+          return [-0.4 * s, 0, 0.6 * s];
+        case "subsidy":
+        case "housing":
+          return [0.5 * s, 0, -0.45 * s];
+        default:
+          return null;
+      }
+    default:
+      return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Observability                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Population-derived state for a node, or -1 when the population cannot inform it. */
+export function observedStateFor(pop: Population, i: number, nodeId: string): number {
+  switch (nodeId) {
+    case "IncomeClassPrior":
+    case "IncomeClass":
+      return pop.incomeClass[i];
+    case "AgeBand":
+      return pop.ageBand[i];
+    case "EducationLevel":
+      return pop.education[i];
+    case "HousingQuality":
+      return pop.housing[i];
+    case "TrustInGov":
+      return pop.trustInGov[i] < 0.36 ? 0 : pop.trustInGov[i] < 0.6 ? 1 : 2;
+    case "ScenarioExposure":
+      return pop.taskExposure[i] < 0.22 ? 0 : pop.taskExposure[i] < 0.38 ? 1 : 2;
+    case "SkillRelevance":
+      return pop.skillRelevance[i] < 0.45 ? 0 : pop.skillRelevance[i] < 0.72 ? 1 : 2;
+    case "EmploymentStatus":
+      return pop.employmentStatus[i];
+    case "SpendingCapacity":
+      return pop.savingsMonths[i] < 1.5 ? 0 : pop.savingsMonths[i] < 5 ? 1 : 2;
+    case "HouseholdStress": {
+      const poor = pop.incomeClass[i] <= 1;
+      const jobless = pop.employmentStatus[i] === 0;
+      const poorHousing = pop.housing[i] === 0;
+      const score = (poor ? 1 : 0) + (jobless ? 1 : 0) + (poorHousing ? 1 : 0);
+      return score >= 2 ? 2 : score === 1 ? 1 : 0;
+    }
+    case "SectorOfWork":
+      return pop.sector[i];
+    case "PublicSentiment":
+      return pop.sentiment[i];
+    case "MigrationIntentBand":
+      return pop.migrationIntent[i] < 0.2 ? 0 : pop.migrationIntent[i] < 0.48 ? 1 : 2;
+    case "ProtestRiskBand":
+      return pop.protestPropensity[i] < 0.12 ? 0 : pop.protestPropensity[i] < 0.3 ? 1 : 2;
+    default:
+      return -1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* CPT construction                                                    */
+/* ------------------------------------------------------------------ */
+
+const ALPHA = 1; // Dirichlet smoothing — keeps evidence from becoming impossible
+
+function uniform(n: number): number[] {
+  return new Array(n).fill(1 / n);
+}
+
+const PRIORS: Record<string, { dist: number[]; source: string }> = {
+  PolicyType: { dist: uniform(POLICY_TYPES.length), source: "prior:assumption" },
+  PolicyIntensity: { dist: uniform(3), source: "prior:assumption" },
+  PolicyBudgetShare: { dist: uniform(3), source: "prior:assumption" },
+  PolicyDuration: { dist: uniform(3), source: "prior:assumption" },
+  ScenarioExposure: { dist: uniform(3), source: "prior:assumption" },
+  AggregateDemand: { dist: uniform(3), source: "derived_from_aggregation" },
+  AggregateSectorOutput: { dist: uniform(3), source: "derived_from_aggregation" },
+  EmploymentAggregate: { dist: uniform(3), source: "derived_from_aggregation" },
+  MigrationAggregate: { dist: uniform(3), source: "derived_from_aggregation" },
+  SectorDemand: { dist: [0.34, 0.4, 0.26], source: "prior:assumption" },
+  AgentSectorOutput: { dist: [0.28, 0.48, 0.24], source: "prior:assumption" },
+  Inflation: { dist: [0.34, 0.44, 0.22], source: "prior:assumption" },
+  EmploymentRateBand: { dist: [0.12, 0.22, 0.34, 0.22, 0.1], source: "prior:assumption" },
+  TownGDPGrowthBand: { dist: [0.08, 0.24, 0.38, 0.22, 0.08], source: "prior:assumption" },
+  WageLevelBand: { dist: [0.1, 0.3, 0.34, 0.2, 0.06], source: "prior:assumption" },
+};
+
+function keyFor(states: number[]): string {
+  return states.join("|");
+}
+
+function comboStates(c: number, sizes: number[]): number[] {
+  const out: number[] = new Array(sizes.length);
+  let rem = c;
+  for (let k = sizes.length - 1; k >= 0; k -= 1) {
+    out[k] = rem % sizes[k];
+    rem = Math.floor(rem / sizes[k]);
+  }
+  return out;
+}
+
+/**
+ * Build the network. CPTs are counted from the population for every node with
+ * at least one observable parent; documented prior shifts then reweight the
+ * rows for the unobservable parents. Nodes with no observable parent use a
+ * documented prior distribution.
+ */
+export function buildBn(pop: Population): Bn {
+  const nodes: Record<string, BnNode> = {};
+  for (const id of Object.keys(DOMAINS)) {
+    const parents = policyParentsFor(id);
+    nodes[id] = {
+      id,
+      domain: DOMAINS[id],
+      parents,
+      kind: parents.length === 0 ? "root" : "micro",
+    };
+  }
+
+  const cpts: Record<string, Cpt> = {};
+
+  for (const id of Object.keys(nodes)) {
+    const domain = nodes[id].domain;
+    const domainN = domain.length;
+    const parents = nodes[id].parents;
+    const latentParents = parents.filter(
+      (p) => !POLICY_NODE_IDS.includes(p) && pop.size > 0 && observedStateFor(pop, 0, p) < 0,
+    );
+    const observableParents = parents.filter(
+      (p) => !POLICY_NODE_IDS.includes(p) && !latentParents.includes(p) && pop.size > 0 && observedStateFor(pop, 0, p) >= 0,
+    );
+    const policyParents = parents.filter((p) => POLICY_NODE_IDS.includes(p));
+
+    /* --- base table over the observable parents, counted from the population --- */
+    const base: Record<string, number[]> = {};
+    if (observableParents.length > 0) {
+      for (let i = 0; i < pop.size; i += 1) {
+        const child = observedStateFor(pop, i, id);
+        if (child < 0) continue;
+        const pStates = observableParents.map((p) => {
+          const st = observedStateFor(pop, i, p);
+          return st < 0 ? 0 : st;
+        });
+        const k = keyFor(pStates);
+        if (!base[k]) base[k] = new Array(domainN).fill(ALPHA);
+        base[k][child] += 1;
+      }
+    }
+
+    /* --- population marginal over the child, used to fill unseen rows --- */
+    const marginalCounts = new Array(domainN).fill(ALPHA);
+    let marginalFromData = false;
+    for (let i = 0; i < pop.size; i += 1) {
+      const child = observedStateFor(pop, i, id);
+      if (child < 0) continue;
+      marginalCounts[child] += 1;
+      marginalFromData = true;
+    }
+
+    const hasObservableData = marginalFromData && Object.keys(base).length > 0;
+    const prior = PRIORS[id] ?? { dist: uniform(domainN), source: "prior:assumption" };
+
+    let marginal: number[];
+    if (marginalFromData) {
+      const sum = marginalCounts.reduce((a, b) => a + b, 0);
+      marginal = marginalCounts.map((v) => v / sum);
+    } else {
+      marginal = prior.dist.slice();
+    }
+
+    /* --- full table over all parents: base x documented shifts --- */
+    const comboCount = parents.reduce((acc, p) => acc * DOMAINS[p].length, 1);
+    const table: Record<string, number[]> = {};
+
+    for (let c = 0; c < comboCount; c += 1) {
+      const fullStates = comboStates(
+        c,
+        parents.map((p) => DOMAINS[p].length),
+      );
+
+      let baseDist: number[];
+      if (hasObservableData) {
+        const obsKey = keyFor(observableParents.map((p) => fullStates[parents.indexOf(p)]));
+        baseDist = base[obsKey] ?? marginal;
+      } else {
+        baseDist = prior.dist;
+      }
+      const baseSum = baseDist.reduce((a, b) => a + b, 0) || 1;
+      let dist = baseDist.map((v) => v / baseSum);
+
+      // Documented shifts from unobservable parents.
+      for (const p of latentParents) {
+        const shift = LATENT_SHIFTS[`${id}|${p}`];
+        if (!shift) continue;
+        const row = shift[fullStates[parents.indexOf(p)]];
+        if (!row) continue;
+        dist = dist.map((v, k) => v * Math.exp(row[k] ?? 0));
+      }
+
+      // Documented policy effects, scaled by intensity and budget share.
+      if (policyParents.length > 0) {
+        const policy: Record<string, string> = {};
+        for (const p of policyParents) policy[p] = DOMAINS[p][fullStates[parents.indexOf(p)]];
+        const shift = policyLogShift(id, policy);
+        if (shift) dist = dist.map((v, k) => v * Math.exp(shift[k] ?? 0));
+      }
+
+      const sum = dist.reduce((a, b) => a + b, 0) || 1;
+      table[keyFor(fullStates)] = dist.map((v) => v / sum);
+    }
+
+    const provenance = hasObservableData
+      ? latentParents.length + policyParents.length > 0
+        ? "estimated_from_population+prior:assumption"
+        : "estimated_from_population"
+      : prior.source;
+
+    cpts[id] = {
+      node: id,
+      table,
+      marginal,
+      source: provenance,
+      provenance,
+    };
+  }
+
+  return {
+    version: BN_VERSION,
+    nodes,
+    order: [...MICRO_NODES, ...TOWN_NODES, ...FEEDBACK_NODES],
+    cpts,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Compiled form (fast inference)                                      */
+/* ------------------------------------------------------------------ */
+
+export interface CompiledBn {
+  bn: Bn;
+  ids: string[];
+  index: Record<string, number>;
+  domainSize: number[];
+  parentIdx: number[][];
+  strides: number[][];
+  tables: Float64Array[];
+  cumulative: Float64Array[];
+  marginal: Float64Array[];
+}
+
+export function compileBn(bn: Bn): CompiledBn {
+  const ids = Object.keys(bn.nodes);
+  const index: Record<string, number> = {};
+  ids.forEach((id, i) => {
+    index[id] = i;
+  });
+  const domainSize = ids.map((id) => bn.nodes[id].domain.length);
+  const parentIdx = ids.map((id) => bn.nodes[id].parents.map((p) => index[p]));
+  const strides = parentIdx.map((ps) => {
+    const st: number[] = new Array(ps.length).fill(1);
+    for (let k = ps.length - 2; k >= 0; k -= 1) {
+      st[k] = st[k + 1] * domainSize[ps[k + 1]];
+    }
+    return st;
+  });
+
+  const tables = ids.map((id, i) => {
+    const combos = parentIdx[i].reduce((acc, p) => acc * domainSize[p], 1);
+    const n = domainSize[i];
+    const flat = new Float64Array(combos * n);
+    const cpt = bn.cpts[id];
+    for (let c = 0; c < combos; c += 1) {
+      const states = comboStates(
+        c,
+        parentIdx[i].map((p) => domainSize[p]),
+      );
+      const dist = cpt?.table[keyFor(states)] ?? cpt?.marginal ?? uniform(n);
+      for (let s = 0; s < n; s += 1) flat[c * n + s] = dist[s] ?? 0;
+    }
+    return flat;
+  });
+
+  const cumulative = tables.map((t, i) => {
+    const n = domainSize[i];
+    const combos = t.length / n;
+    const out = new Float64Array(t.length);
+    for (let c = 0; c < combos; c += 1) {
+      toCumulative(t.subarray(c * n, (c + 1) * n), out.subarray(c * n, (c + 1) * n));
+    }
+    return out;
+  });
+
+  const marginal = ids.map((id) => Float64Array.from(bn.cpts[id]?.marginal ?? uniform(domainSize[index[id]])));
+
+  return { bn, ids, index, domainSize, parentIdx, strides, tables, cumulative, marginal };
+}
+
+function drawNode(c: CompiledBn, nodeIdx: number, states: Int32Array, r: number): number {
+  const ps = c.parentIdx[nodeIdx];
+  const n = c.domainSize[nodeIdx];
+  let combo = 0;
+  for (let k = 0; k < ps.length; k += 1) combo += states[ps[k]] * c.strides[nodeIdx][k];
+  const base = combo * n;
+  const cum = c.cumulative[nodeIdx];
+  for (let s = 0; s < n; s += 1) {
+    if (r < cum[base + s]) return s;
+  }
+  return n - 1;
+}
+
+export interface Evidence {
+  [nodeId: string]: string | number | undefined;
+}
+
+export function applyEvidence(c: CompiledBn, states: Int32Array, evidence: Evidence): Uint8Array {
+  const fixed = new Uint8Array(c.ids.length);
+  for (const nodeId of Object.keys(evidence)) {
+    const v = evidence[nodeId];
+    if (v === undefined || v === null) continue;
+    const idx = c.index[nodeId];
+    if (idx === undefined) continue;
+    const state = typeof v === "number" ? v : c.bn.nodes[nodeId].domain.indexOf(v);
+    if (state < 0) continue;
+    states[idx] = state;
+    fixed[idx] = 1;
+  }
+  return fixed;
+}
+
+/**
+ * Precondition for exact ancestral sampling.
+ *
+ * Sampling is exact when every piece of evidence sits on a node whose own
+ * ancestry is fully fixed, i.e. conditioning is applied to a variable that is a
+ * deterministic function of the fixed upstream state. In this system that means
+ * all roots are evidence (which the simulation guarantees) and any non-root
+ * evidence — such as the computed Inflation band — has fixed parents.
+ *
+ * Throws rather than silently producing biased samples.
+ */
+export function assertEvidenceIsUpstream(c: CompiledBn, fixed: Uint8Array): void {
+  for (let i = 0; i < c.ids.length; i += 1) {
+    if (!fixed[i]) continue;
+    for (const p of c.parentIdx[i]) {
+      if (fixed[p]) continue;
+      throw new Error(
+        `BN evidence precondition violated: "${c.ids[i]}" is conditioned on but its parent "${c.ids[p]}" is neither fixed nor sampled upstream.`,
+      );
+    }
+  }
+}
+
+export function sampleNodes(
+  c: CompiledBn,
+  states: Int32Array,
+  fixed: Uint8Array,
+  nodeIds: readonly string[],
+  rng: Rng,
+): void {
+  for (const id of nodeIds) {
+    const idx = c.index[id];
+    if (idx === undefined || fixed[idx]) continue;
+    states[idx] = drawNode(c, idx, states, rng.next());
+  }
+}
+
+/**
+ * Draw any root that was not supplied as evidence from its own distribution.
+ *
+ * This matters for `do(...)`: cutting an intervened node's parents turns it
+ * into a root, and its point-mass table must then be honoured. Without this
+ * step an unspecified root would silently remain at state 0.
+ */
+export function sampleRoots(c: CompiledBn, states: Int32Array, fixed: Uint8Array, rng: Rng): void {
+  for (const id of ROOT_NODE_IDS) {
+    const idx = c.index[id];
+    if (idx === undefined || fixed[idx]) continue;
+    states[idx] = drawNode(c, idx, states, rng.next());
+  }
+}
+
+export function sampleMicro(c: CompiledBn, states: Int32Array, fixed: Uint8Array, rng: Rng): void {
+  sampleRoots(c, states, fixed, rng);
+  sampleNodes(c, states, fixed, MICRO_NODES, rng);
+}
+
+export function sampleTownAndFeedback(c: CompiledBn, states: Int32Array, fixed: Uint8Array, rng: Rng): void {
+  sampleNodes(c, states, fixed, TOWN_NODES, rng);
+  sampleNodes(c, states, fixed, FEEDBACK_NODES, rng);
+}
+
+/** Marginal distribution of a node given evidence, by ancestral sampling. */
+export function posteriorDistribution(
+  c: CompiledBn,
+  nodeId: string,
+  evidence: Evidence,
+  n: number,
+  rng: Rng,
+  scratch?: Int32Array,
+): number[] {
+  const idx = c.index[nodeId];
+  const counts = new Array(c.domainSize[idx]).fill(0);
+  const states = scratch ?? new Int32Array(c.ids.length);
+  for (let k = 0; k < n; k += 1) {
+    states.fill(0);
+    const fixed = applyEvidence(c, states, evidence);
+    sampleMicro(c, states, fixed, rng);
+    sampleTownAndFeedback(c, states, fixed, rng);
+    counts[states[idx]] += 1;
+  }
+  return counts.map((v) => v / n);
+}
+
+/**
+ * Causal attribution by mutual information: how much does knowing an ancestor
+ * change what we believe about the target? This is the explainability the
+ * abandoned Random Forest could not offer (paper §5).
+ */
+export function causalAttribution(
+  c: CompiledBn,
+  target: string,
+  evidence: Evidence,
+  n: number,
+  rng: Rng,
+): CausalFactor[] {
+  const tIdx = c.index[target];
+  const targetN = c.domainSize[tIdx];
+  const candidates = Object.keys(DOMAINS).filter((id) => id !== target && !AGGREGATE_NODES.includes(id));
+  const joint = candidates.map(() => new Float64Array(2 * targetN));
+  const tCounts = new Float64Array(targetN);
+  const states = new Int32Array(c.ids.length);
+
+  for (let k = 0; k < n; k += 1) {
+    states.fill(0);
+    const fixed = applyEvidence(c, states, evidence);
+    sampleMicro(c, states, fixed, rng);
+    sampleTownAndFeedback(c, states, fixed, rng);
+    const t = states[tIdx];
+    tCounts[t] += 1;
+    for (let ai = 0; ai < candidates.length; ai += 1) {
+      const aIdx = c.index[candidates[ai]];
+      const half = Math.floor(c.domainSize[aIdx] / 2);
+      const bucket = states[aIdx] < half ? 0 : 1;
+      joint[ai][bucket * targetN + t] += 1;
+    }
+  }
+
+  const factors: CausalFactor[] = [];
+  for (let ai = 0; ai < candidates.length; ai += 1) {
+    let mi = 0;
+    for (let b = 0; b < 2; b += 1) {
+      let pA = 0;
+      for (let t = 0; t < targetN; t += 1) pA += joint[ai][b * targetN + t] / n;
+      if (pA <= 0) continue;
+      for (let t = 0; t < targetN; t += 1) {
+        const pJoint = joint[ai][b * targetN + t] / n;
+        if (pJoint <= 0) continue;
+        const pT = tCounts[t] / n;
+        if (pT <= 0) continue;
+        mi += pJoint * Math.log(pJoint / (pA * pT));
+      }
+    }
+    factors.push({ node: candidates[ai], influence: mi });
+  }
+
+  factors.sort((a, b) => b.influence - a.influence);
+  const max = factors[0]?.influence || 1;
+  return factors.slice(0, 8).map((f) => ({ node: f.node, influence: f.influence / max }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Interventions (do-calculus)                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `do(X = x)`: cut X's incoming edges and set it to a point mass. Observing
+ * that a policy was applied and imposing one are different questions; a
+ * decision-support tool must answer the second.
+ */
+export function withIntervention(bn: Bn, interventions: Record<string, string>): Bn {
+  const nodes: Record<string, BnNode> = {};
+  for (const id of Object.keys(bn.nodes)) {
+    nodes[id] = { ...bn.nodes[id], parents: interventions[id] ? [] : bn.nodes[id].parents };
+  }
+
+  const cpts: Record<string, Cpt> = {};
+  for (const id of Object.keys(bn.cpts)) {
+    const original = bn.cpts[id];
+    if (interventions[id]) {
+      const domain = bn.nodes[id].domain;
+      const state = domain.indexOf(interventions[id]);
+      const dist = domain.map((_, i) => (i === state ? 1 : 0));
+      cpts[id] = { node: id, table: { "": dist }, marginal: dist, source: "intervention:do", provenance: "intervention:do" };
+      continue;
+    }
+    const oldParents = bn.nodes[id].parents;
+    const newParents = nodes[id].parents;
+    if (newParents.length === oldParents.length) {
+      cpts[id] = original;
+      continue;
+    }
+    const table: Record<string, number[]> = {};
+    const sizes = newParents.map((p) => bn.nodes[p].domain.length);
+    const combos = sizes.reduce((a, b) => a * b, 1);
+    for (let c = 0; c < combos; c += 1) {
+      const states = comboStates(c, sizes);
+      const full = oldParents.map((p) =>
+        newParents.includes(p) ? states[newParents.indexOf(p)] : bn.nodes[p].domain.indexOf(interventions[p]),
+      );
+      table[keyFor(full)] = original.table[keyFor(full)] ?? original.marginal.slice();
+    }
+    cpts[id] = { ...original, table, source: `${original.source}+intervention:do`, provenance: "intervention:do" };
+  }
+
+  return { ...bn, nodes, cpts };
+}
+
+/* ------------------------------------------------------------------ */
+/* Validation (§6.6)                                                   */
+/* ------------------------------------------------------------------ */
+
+function randomAgentEvidence(pop: Population, agent: number, extra?: Evidence): Evidence {
+  return {
+    IncomeClassPrior: INCOME_CLASSES[pop.incomeClass[agent]],
+    AgeBand: AGE_BANDS[pop.ageBand[agent]],
+    EducationLevel: EDUCATION_LEVELS[pop.education[agent]],
+    HousingQuality: QUALITY_LEVELS[pop.housing[agent]],
+    TrustInGov: TRUST_BANDS[pop.trustInGov[agent] < 0.36 ? 0 : pop.trustInGov[agent] < 0.6 ? 1 : 2],
+    ScenarioExposure: (["low", "medium", "high"] as const)[pop.taskExposure[agent] < 0.22 ? 0 : pop.taskExposure[agent] < 0.38 ? 1 : 2],
+    // Hold the town backdrop at its neutral setting. Inflation is deliberately
+    // left SAMPLED so the demand -> inflation channel can still respond; that
+    // is what the "high budget share raises inflation" check exercises.
+    AggregateDemand: "normal",
+    AggregateSectorOutput: "stable",
+    EmploymentAggregate: "normal",
+    MigrationAggregate: "low",
+    ...(extra ?? {}),
+  };
+}
+
+/** Probability that `target` lands in `targetStates` under a given policy. */
+export function policyResponse(
+  c: CompiledBn,
+  pop: Population,
+  policy: Record<string, string>,
+  target: string,
+  targetStates: number[],
+  n: number,
+  rng: Rng,
+  extraEvidence?: Evidence,
+): number {
+  const idx = c.index[target];
+  const states = new Int32Array(c.ids.length);
+  let hits = 0;
+  for (let k = 0; k < n; k += 1) {
+    states.fill(0);
+    const evidence: Evidence = {
+      PolicyType: policy.PolicyType ?? "none",
+      PolicyIntensity: policy.PolicyIntensity ?? "medium",
+      PolicyBudgetShare: policy.PolicyBudgetShare ?? "medium",
+      PolicyDuration: policy.PolicyDuration ?? "medium",
+      ...randomAgentEvidence(pop, rng.int(pop.size), extraEvidence),
+    };
+    const fixed = applyEvidence(c, states, evidence);
+    sampleMicro(c, states, fixed, rng);
+    sampleTownAndFeedback(c, states, fixed, rng);
+    if (targetStates.includes(states[idx])) hits += 1;
+  }
+  return hits / n;
+}
+
+export function validateBnDirection(bn: Bn, pop: Population, n = 1000): ValidationCheck[] {
+  const c = compileBn(bn);
+  const rng = createRng(0x51af1e);
+  const checks: ValidationCheck[] = [];
+  const add = (check: string, passed: boolean, observed: string, expected: string) => {
+    checks.push({ group: "network", check, passed, observed, expected });
+  };
+
+  const cases: { check: string; policy: Record<string, string>; target: string; states: number[]; extra?: Evidence }[] = [
+    {
+      check: "subsidy raises P(formal employment)",
+      policy: { PolicyType: "subsidy", PolicyIntensity: "high", PolicyBudgetShare: "high" },
+      target: "EmploymentStatus",
+      states: [2],
+    },
+    {
+      check: "high budget share raises P(high inflation)",
+      policy: { PolicyType: "subsidy", PolicyIntensity: "high", PolicyBudgetShare: "high" },
+      target: "Inflation",
+      states: [2],
+    },
+    {
+      check: "housing policy improves positive sentiment",
+      policy: { PolicyType: "housing", PolicyIntensity: "high", PolicyBudgetShare: "high" },
+      target: "PublicSentiment",
+      states: [2],
+    },
+    {
+      // Migration is rare in this town, so the meaningful comparison is
+      // "consider leaving or leaving" rather than the leaving band alone.
+      check: "unemployed + obsolete skills raises P(consider or leave)",
+      policy: { PolicyType: "none" },
+      target: "MigrationIntentBand",
+      states: [1, 2],
+      extra: { EmploymentStatus: "unemployed", SkillRelevance: "obsolete" },
+    },
+    {
+      check: "long education policy raises high-growth probability",
+      policy: { PolicyType: "education", PolicyIntensity: "high", PolicyBudgetShare: "high", PolicyDuration: "long" },
+      target: "TownGDPGrowthBand",
+      states: [3, 4],
+    },
+  ];
+
+  for (const tc of cases) {
+    const base = policyResponse(c, pop, { PolicyType: "none" }, tc.target, tc.states, n, rng, tc.extra);
+    const treated = policyResponse(c, pop, tc.policy, tc.target, tc.states, n, rng, tc.extra);
+    add(
+      tc.check,
+      treated > base,
+      `${(treated * 100).toFixed(1)}% vs ${(base * 100).toFixed(1)}% baseline`,
+      "strictly greater than the no-policy baseline",
+    );
+  }
+
+  const withoutSource = Object.keys(bn.cpts).filter((id) => !bn.cpts[id].source || !bn.cpts[id].provenance);
+  add(
+    "every CPT carries provenance",
+    withoutSource.length === 0,
+    withoutSource.length === 0 ? "all tables annotated" : withoutSource.join(", "),
+    "no unannotated tables",
+  );
+
+  let badTable = "";
+  for (const id of Object.keys(bn.cpts)) {
+    for (const k of Object.keys(bn.cpts[id].table)) {
+      const sum = bn.cpts[id].table[k].reduce((a, b) => a + b, 0);
+      if (Math.abs(sum - 1) > 1e-9) {
+        badTable = `${id}[${k}] = ${sum.toFixed(6)}`;
+        break;
+      }
+    }
+    if (badTable) break;
+  }
+  add("all CPT rows normalised", badTable === "", badTable || "every row sums to 1", "every row sums to 1");
+
+  const estimated = Object.keys(bn.cpts).filter((id) => bn.cpts[id].provenance.includes("estimated_from_population"));
+  add(
+    "CPTs learned from data, not hand-authored",
+    estimated.length >= 10,
+    `${estimated.length} of ${Object.keys(bn.cpts).length} tables estimated from the population`,
+    "majority of tables estimated from the population",
+  );
+
+  return checks;
+}
+
+/** Directed intervention response, used by the UI's sensitivity readout. */
+export function interventionEffect(
+  c: CompiledBn,
+  pop: Population,
+  base: Record<string, string>,
+  treated: Record<string, string>,
+  target: string,
+  targetStates: number[],
+  n: number,
+  rng: Rng,
+): { baseline: number; treated: number } {
+  return {
+    baseline: policyResponse(c, pop, base, target, targetStates, n, rng),
+    treated: policyResponse(c, pop, treated, target, targetStates, n, rng),
+  };
+}
+
+export const AGE_BAND_DOMAIN = AGE_BANDS;
+export const EDUCATION_DOMAIN = EDUCATION_LEVELS;

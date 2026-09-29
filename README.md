@@ -19,3 +19,46 @@
 
 - Instead of experimenting on real people, we experiment on a virtual society first.
 -----------------------------------------------------------------------------------------------------------------------------------------
+
+## Simulation Lab engine
+
+The Simulation Lab is a **decisive** engine, not a generative one. Every number it reports is a
+deterministic function of `(population, policy vector, engine version, seed)`. No language model
+produces an outcome, a magnitude, or a chart series.
+
+- **Agent = a person**, living in a household, in a ward, in a zone, in a town. It is never a town,
+  never a zone, and never a "representative citizen".
+- **Population** — one agent per real citizen of Pandharpur (Solapur, Maharashtra), generated
+  from published Census 2011 totals so the published figures match exactly (population, sex split,
+  households, children 0–6, SC/ST share, literacy by gender and worker counts by gender). The
+  Census fields are verified; income, sector, education and housing are modelled, and
+  `src/simulation/census.ts` states which is which field by field.
+- **Bayesian network** — 29 nodes, with conditional probability tables counted from the population
+  wherever a node is observable, and documented priors elsewhere. Interventions use `do(...)` by
+  graph mutilation, so a policy effect is causal rather than a conditional read.
+- **Multi-period** — the network is rolled one period at a time with agent state carried forward
+  (employment, savings stock, sentiment, trust, migration intent, skills), and each instrument has
+  its own channel lag so the trajectory does not move in lock-step.
+- **Counterfactual baseline** — the no-policy path is produced by the same engine on the same
+  population, so a result always ships with its own comparison instead of a hardcoded series.
+- **Zone incidence** — East / West / North / South are a partition of all 33 wards reported *after*
+  the run, so the output can be "town-wide +6%, but North +11% and East +1.2%".
+- **Policy search** — Differential Evolution (with NSGA-II non-dominated sorting) searches
+  intensity, budget, duration and allocation, scored by the network, and reports the Pareto front
+  together with an equal-budget random-search control.
+- **Decision layer** — a "System One"-style adapter (rule table by default; Jev or a
+  schema-constrained LLM when configured) answers *typed* questions at period boundaries
+  (`Choose` / `Score` / `Noul`). It is never the source of a displayed number, and it records when
+  it had to fall back.
+- **Accounting identities** — headline metrics are summations over the agent population, and the
+  identities are asserted on every period of every run. A run that does not balance fails loudly.
+- **Evidence pack** — each run re-checks the Census totals, the network's documented response
+  directions, the identities and reproducibility, and reports exactly which checks passed.
+
+```bash
+bun run test     # 25 tests: population, network directions, identities, determinism, search, zones
+bun run dev      # app; the Simulation Lab page renders engine output, not mock data
+```
+
+The full specification, the reasoning behind each decision, and an as-built record of what is
+implemented versus outstanding are in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md).
