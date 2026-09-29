@@ -1,0 +1,715 @@
+{
+  "response": [
+    {
+      "name": "Migration Support Initiative",
+      "description": "Implement training programs, relocation assistance, and job placement services to facilitate smooth migration and reduce workforce mobility issues.",
+      "benefits": [
+        "Reduces unemployment rate through improved workforce mobility",
+        "Enhances access to job opportunities in underdeveloped regions",
+        "Supports skills development and upskilling of workers"
+      ],
+      "risks": [
+        "Initial investment costs for infrastructure and personnel",
+        "Potential displacement of local workers due to new job opportunities",
+        "Coordination challenges with multiple stakeholders and industries"
+      ],
+      "affected": [
+        "Employed individuals in regions with high migration rates",
+        "Local businesses struggling to find skilled workers",
+        "Regional economies with underdeveloped infrastructure"
+      ]
+    },
+    {
+      "name": "Education Enhancement Program",
+      "description": "Increase literacy rates through vocational training, adult education programs, and literacy enhancement courses.",
+      "benefits": [
+        "Boosts employment prospects and reduces unemployment",
+        "Upskilling and reskilling the workforce for in-demand industries",
+        "Improved economic competitiveness through better education"
+      ],
+      "risks": [
+        "High costs associated with education infrastructure development",
+        "Potential mismatch between skills acquired and job market demand",
+        "Equity and access issues affecting marginalized communities"
+      ],
+      "affected": [
+        "Adults and youth in need of educational support",
+        "Businesses requiring skilled workers to stay competitive",
+        "Regional economies with underdeveloped education infrastructure"
+      ]
+    },
+    {
+      "name": "Healthcare Infrastructure Enhancement",
+      "description": "Improve healthcare infrastructure to enhance doctor availability, maternal care services, and overall workforce well-being.",
+      "benefits": [
+        "Better workforce productivity and reduced absenteeism",
+        "Reduced healthcare-related costs and improved economic outcomes",
+        "Enhanced overall well-being and quality of life for workers"
+      ],
+      "risks": [
+        "High upfront costs for infrastructure development and personnel",
+        "Potential challenges in recruiting and retaining healthcare professionals",
+        "Equity and access issues affecting marginalized communities"
+      ],
+      "affected": [
+        "Employees struggling with healthcare-related issues",
+        "Businesses experiencing reduced productivity due to employee health",
+        "Regional economies with substandard healthcare infrastructure"
+      ]
+    }
+  ],
+  "chart_extracts": {
+    "economy": {
+      "dataset": "economy",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "employment_rate",
+        "unemployment_rate",
+        "agriculture_percent",
+        "industry_percent",
+        "services_percent",
+        "avg_income",
+        "poverty_rate"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "employment_rate": {
+          "mean": 67.898,
+          "std": 15.883,
+          "min": 40.03,
+          "max": 95,
+          "p25": 54.01,
+          "p50": 67.715,
+          "p75": 81.607,
+          "trend": "stable"
+        },
+        "unemployment_rate": {
+          "mean": 10.893,
+          "std": 5.131,
+          "min": 2,
+          "max": 19.99,
+          "p25": 6.478,
+          "p50": 10.75,
+          "p75": 15.322,
+          "trend": "volatile"
+        },
+        "agriculture_percent": {
+          "mean": 33.147,
+          "std": 15.98,
+          "min": 5.02,
+          "max": 59.98,
+          "p25": 19.337,
+          "p50": 33.845,
+          "p75": 47.345,
+          "trend": "volatile"
+        },
+        "industry_percent": {
+          "mean": 29.829,
+          "std": 11.648,
+          "min": 10.02,
+          "max": 49.99,
+          "p25": 19.77,
+          "p50": 29.495,
+          "p75": 39.812,
+          "trend": "volatile"
+        },
+        "services_percent": {
+          "mean": 50.168,
+          "std": 17.034,
+          "min": 20.02,
+          "max": 79.97,
+          "p25": 36.18,
+          "p50": 50.445,
+          "p75": 64.642,
+          "trend": "volatile"
+        },
+        "avg_income": {
+          "mean": 275917.072,
+          "std": 129768.572,
+          "min": 50280,
+          "max": 499653,
+          "p25": 165790.5,
+          "p50": 280320.5,
+          "p75": 386387.25,
+          "trend": "volatile"
+        },
+        "poverty_rate": {
+          "mean": 22.741,
+          "std": 10.03,
+          "min": 5.02,
+          "max": 39.97,
+          "p25": 14.29,
+          "p50": 22.79,
+          "p75": 31.425,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        },
+        "services_percent": {
+          "latest": 77.72,
+          "mean": 50.168,
+          "deviation_sigmas": 1.62,
+          "direction": "above"
+        }
+      },
+      "highlights": [
+        "economy: 'town_id' is the most variable metric (coefficient of variation 57.7%)"
+      ],
+      "nl_summary": "The economy dataset spans 2500 records; 'employment_rate' is stable with a mean of 67.898."
+    },
+    "demographics": {
+      "dataset": "demographics",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "total_population",
+        "male_population",
+        "female_population",
+        "age_0_14",
+        "age_15_60",
+        "age_60_plus",
+        "households",
+        "migration_rate"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "total_population": {
+          "mean": 248188.522,
+          "std": 143423.09,
+          "min": 5135,
+          "max": 499575,
+          "p25": 125036,
+          "p50": 243943.5,
+          "p75": 371821,
+          "trend": "volatile"
+        },
+        "male_population": {
+          "mean": 125221.646,
+          "std": 71096.694,
+          "min": 2525,
+          "max": 249824,
+          "p25": 62485.25,
+          "p50": 124829,
+          "p75": 187094.5,
+          "trend": "volatile"
+        },
+        "female_population": {
+          "mean": 126092.617,
+          "std": 71400.929,
+          "min": 2561,
+          "max": 249969,
+          "p25": 63697,
+          "p50": 126198.5,
+          "p75": 186493.75,
+          "trend": "volatile"
+        },
+        "age_0_14": {
+          "mean": 50459.508,
+          "std": 28822.749,
+          "min": 1090,
+          "max": 99976,
+          "p25": 25562.25,
+          "p50": 50209.5,
+          "p75": 75960,
+          "trend": "volatile"
+        },
+        "age_15_60": {
+          "mean": 151099.621,
+          "std": 86462.366,
+          "min": 2112,
+          "max": 299968,
+          "p25": 74549.25,
+          "p50": 152719,
+          "p75": 225961,
+          "trend": "volatile"
+        },
+        "age_60_plus": {
+          "mean": 25299.748,
+          "std": 14347.102,
+          "min": 518,
+          "max": 49997,
+          "p25": 12286.5,
+          "p50": 25538,
+          "p75": 37605.5,
+          "trend": "volatile"
+        },
+        "households": {
+          "mean": 50618.714,
+          "std": 28320.339,
+          "min": 1010,
+          "max": 99961,
+          "p25": 26451.5,
+          "p50": 50389,
+          "p75": 74329.25,
+          "trend": "volatile"
+        },
+        "migration_rate": {
+          "mean": 2.319,
+          "std": 4.305,
+          "min": -4.99,
+          "max": 10,
+          "p25": -1.42,
+          "p50": 2.315,
+          "p75": 5.953,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        },
+        "total_population": {
+          "latest": 497533,
+          "mean": 248188.522,
+          "deviation_sigmas": 1.74,
+          "direction": "above"
+        }
+      },
+      "highlights": [
+        "demographics: 'migration_rate' is the most variable metric (coefficient of variation 185.6%)"
+      ],
+      "nl_summary": "The demographics dataset spans 2500 records; 'migration_rate' is volatile with a mean of 2.319."
+    },
+    "education": {
+      "dataset": "education",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "literacy_rate",
+        "male_literacy",
+        "female_literacy",
+        "school_enrollment",
+        "dropout_rate",
+        "schools",
+        "colleges"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "literacy_rate": {
+          "mean": 74.381,
+          "std": 13.881,
+          "min": 50.01,
+          "max": 97.99,
+          "p25": 62.55,
+          "p50": 74.445,
+          "p75": 86.81,
+          "trend": "stable"
+        },
+        "male_literacy": {
+          "mean": 79.706,
+          "std": 11.235,
+          "min": 60.01,
+          "max": 99,
+          "p25": 70.27,
+          "p50": 79.915,
+          "p75": 89.295,
+          "trend": "stable"
+        },
+        "female_literacy": {
+          "mean": 67.419,
+          "std": 15.851,
+          "min": 40.02,
+          "max": 95,
+          "p25": 53.588,
+          "p50": 67.21,
+          "p75": 81.282,
+          "trend": "stable"
+        },
+        "school_enrollment": {
+          "mean": 80.389,
+          "std": 11.411,
+          "min": 60,
+          "max": 100,
+          "p25": 70.735,
+          "p50": 80.365,
+          "p75": 90.35,
+          "trend": "stable"
+        },
+        "dropout_rate": {
+          "mean": 10.435,
+          "std": 5.501,
+          "min": 1,
+          "max": 20,
+          "p25": 5.588,
+          "p50": 10.4,
+          "p75": 15.28,
+          "trend": "volatile"
+        },
+        "schools": {
+          "mean": 102.314,
+          "std": 55.953,
+          "min": 5,
+          "max": 199,
+          "p25": 55,
+          "p50": 102,
+          "p75": 150,
+          "trend": "volatile"
+        },
+        "colleges": {
+          "mean": 23.998,
+          "std": 14.255,
+          "min": 0,
+          "max": 49,
+          "p25": 12,
+          "p50": 24,
+          "p75": 36,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        }
+      },
+      "highlights": [
+        "education: 'colleges' is the most variable metric (coefficient of variation 59.4%)"
+      ],
+      "nl_summary": "The education dataset spans 2500 records; 'literacy_rate' is stable with a mean of 74.381."
+    },
+    "healthcare": {
+      "dataset": "healthcare",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "hospitals",
+        "beds_per_1000",
+        "doctors",
+        "birth_rate",
+        "death_rate",
+        "infant_mortality",
+        "insurance_coverage"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "hospitals": {
+          "mean": 25.184,
+          "std": 14.019,
+          "min": 1,
+          "max": 49,
+          "p25": 13,
+          "p50": 25,
+          "p75": 37,
+          "trend": "volatile"
+        },
+        "beds_per_1000": {
+          "mean": 2.814,
+          "std": 1.304,
+          "min": 0.5,
+          "max": 5,
+          "p25": 1.68,
+          "p50": 2.88,
+          "p75": 3.93,
+          "trend": "volatile"
+        },
+        "doctors": {
+          "mean": 252.975,
+          "std": 143.407,
+          "min": 5,
+          "max": 499,
+          "p25": 127,
+          "p50": 248.5,
+          "p75": 380,
+          "trend": "volatile"
+        },
+        "birth_rate": {
+          "mean": 20.092,
+          "std": 5.816,
+          "min": 10,
+          "max": 29.99,
+          "p25": 15.098,
+          "p50": 20.28,
+          "p75": 25.19,
+          "trend": "stable"
+        },
+        "death_rate": {
+          "mean": 10.082,
+          "std": 2.897,
+          "min": 5.01,
+          "max": 15,
+          "p25": 7.57,
+          "p50": 10.08,
+          "p75": 12.612,
+          "trend": "stable"
+        },
+        "infant_mortality": {
+          "mean": 27.44,
+          "std": 13.038,
+          "min": 5.01,
+          "max": 49.99,
+          "p25": 16.025,
+          "p50": 27.19,
+          "p75": 38.873,
+          "trend": "volatile"
+        },
+        "insurance_coverage": {
+          "mean": 49.507,
+          "std": 22.878,
+          "min": 10.09,
+          "max": 89.98,
+          "p25": 29.46,
+          "p50": 49.45,
+          "p75": 68.552,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        },
+        "doctors": {
+          "latest": 6,
+          "mean": 252.975,
+          "deviation_sigmas": 1.72,
+          "direction": "below"
+        }
+      },
+      "highlights": [
+        "healthcare: 'town_id' is the most variable metric (coefficient of variation 57.7%)"
+      ],
+      "nl_summary": "The healthcare dataset spans 2500 records; 'birth_rate' is stable with a mean of 20.092."
+    },
+    "infrastructure": {
+      "dataset": "infrastructure",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "electricity_access",
+        "water_access",
+        "sanitation_access",
+        "road_connectivity_index",
+        "internet_penetration",
+        "pucca_houses_percent",
+        "slum_population_percent"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "electricity_access": {
+          "mean": 80.209,
+          "std": 11.49,
+          "min": 60.01,
+          "max": 100,
+          "p25": 70.267,
+          "p50": 80.24,
+          "p75": 89.992,
+          "trend": "stable"
+        },
+        "water_access": {
+          "mean": 75.053,
+          "std": 14.509,
+          "min": 50,
+          "max": 99.99,
+          "p25": 62.303,
+          "p50": 75.03,
+          "p75": 87.543,
+          "trend": "stable"
+        },
+        "sanitation_access": {
+          "mean": 69.842,
+          "std": 17.375,
+          "min": 40.03,
+          "max": 99.89,
+          "p25": 55.208,
+          "p50": 69.325,
+          "p75": 85.242,
+          "trend": "stable"
+        },
+        "road_connectivity_index": {
+          "mean": 5.387,
+          "std": 2.61,
+          "min": 1,
+          "max": 9.99,
+          "p25": 3.11,
+          "p50": 5.33,
+          "p75": 7.69,
+          "trend": "volatile"
+        },
+        "internet_penetration": {
+          "mean": 57.679,
+          "std": 21.751,
+          "min": 20.01,
+          "max": 94.98,
+          "p25": 38.823,
+          "p50": 57.565,
+          "p75": 76.755,
+          "trend": "volatile"
+        },
+        "pucca_houses_percent": {
+          "mean": 64.444,
+          "std": 20.392,
+          "min": 30.03,
+          "max": 99.99,
+          "p25": 46.072,
+          "p50": 64.175,
+          "p75": 81.552,
+          "trend": "volatile"
+        },
+        "slum_population_percent": {
+          "mean": 20.413,
+          "std": 11.647,
+          "min": 0,
+          "max": 39.98,
+          "p25": 10.205,
+          "p50": 20.825,
+          "p75": 30.562,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        },
+        "electricity_access": {
+          "latest": 61.01,
+          "mean": 80.209,
+          "deviation_sigmas": 1.67,
+          "direction": "below"
+        }
+      },
+      "highlights": [
+        "infrastructure: 'town_id' is the most variable metric (coefficient of variation 57.7%)"
+      ],
+      "nl_summary": "The infrastructure dataset spans 2500 records; 'road_connectivity_index' is volatile with a mean of 5.387."
+    },
+    "governance": {
+      "dataset": "governance",
+      "rows": 2500,
+      "columns": [
+        "town_id",
+        "budget_allocation",
+        "schemes_active",
+        "beneficiaries",
+        "tax_collection",
+        "governance_type"
+      ],
+      "stats": {
+        "town_id": {
+          "mean": 1250.5,
+          "std": 721.832,
+          "min": 1,
+          "max": 2500,
+          "p25": 625.75,
+          "p50": 1250.5,
+          "p75": 1875.25,
+          "trend": "volatile"
+        },
+        "budget_allocation": {
+          "mean": 25581169.716,
+          "std": 14201888.148,
+          "min": 1018708,
+          "max": 49993181,
+          "p25": 13051742.5,
+          "p50": 25740642,
+          "p75": 37745102.5,
+          "trend": "volatile"
+        },
+        "schemes_active": {
+          "mean": 10.098,
+          "std": 5.458,
+          "min": 1,
+          "max": 19,
+          "p25": 5,
+          "p50": 10,
+          "p75": 15,
+          "trend": "volatile"
+        },
+        "beneficiaries": {
+          "mean": 49179.129,
+          "std": 28881.102,
+          "min": 592,
+          "max": 99965,
+          "p25": 23655.25,
+          "p50": 48273,
+          "p75": 74060.5,
+          "trend": "volatile"
+        },
+        "tax_collection": {
+          "mean": 15335426.928,
+          "std": 8659016.932,
+          "min": 503642,
+          "max": 29982632,
+          "p25": 7663336.75,
+          "p50": 15411686.5,
+          "p75": 22942421.5,
+          "trend": "volatile"
+        }
+      },
+      "anomalies": {
+        "town_id": {
+          "latest": 2500,
+          "mean": 1250.5,
+          "deviation_sigmas": 1.73,
+          "direction": "above"
+        }
+      },
+      "highlights": [
+        "governance: 'beneficiaries' is the most variable metric (coefficient of variation 58.7%)"
+      ],
+      "nl_summary": "The governance dataset spans 2500 records; 'town_id' is volatile with a mean of 1250.5."
+    }
+  },
+  "warnings": []
+}
