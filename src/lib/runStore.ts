@@ -18,7 +18,8 @@
  * LLM judgement.
  */
 
-import { supabase } from "@/integrations/supabase/client";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
 import type { MetricKey, PolicyVector, SimulationResult } from "@/simulation/types";
 
 const STORAGE_KEY = "meta_society_simulations";
@@ -125,7 +126,37 @@ export function supabaseConfigured(): boolean {
   return Boolean(url && key);
 }
 
+/**
+ * The app's shared client (`@/integrations/supabase/client`) is constructed at
+ * module scope, and `createClient` THROWS when its url/key are missing. Anything
+ * that imported it would therefore fail to load in a workspace with no Supabase
+ * env configured — which is the default state here, and would take out every
+ * page that reads saved runs. So the client is built lazily, and only when the
+ * env vars are actually present.
+ */
+let client: SupabaseClient<Database> | null = null;
+
+function getSupabaseClient(): SupabaseClient<Database> | null {
+  if (!supabaseConfigured()) return null;
+  if (!client) {
+    client = createClient<Database>(
+      import.meta.env.VITE_SUPABASE_URL as string,
+      import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string,
+      {
+        auth: {
+          storage: typeof localStorage !== "undefined" ? localStorage : undefined,
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      },
+    );
+  }
+  return client;
+}
+
 async function persistToSupabase(run: SavedRun, userId: string): Promise<string | undefined> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return "Supabase is not configured";
   try {
     const { error } = await supabase.from("simulations").insert({
       user_id: userId,
