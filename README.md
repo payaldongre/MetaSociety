@@ -70,3 +70,64 @@ in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). The engine's acceptance
 Saved runs persist to the browser store (and to Supabase when it is configured) via
 `src/lib/runStore.ts`; the Dashboard, Data Intelligence, Alerts and Saved Reports pages read real
 engine/population data, not mock samples.
+
+---
+
+## Run it locally
+
+Requires **Node 20+** (verified on Node 22) and, optionally, Bun. Bun is faster; the npm fallback
+below produces the identical result — it was verified against a clean clone.
+
+```bash
+# 1. Get the code
+git pull                      # if you already have a clone, update it first
+git clone https://github.com/payaldongre/MetaSociety.git   # otherwise, clone fresh
+cd MetaSociety
+
+# 2. Install dependencies (pick one)
+bun install                   # if Bun is available
+npm install                   # fallback: no Bun required (~586 packages)
+
+# 3. Typecheck — must report zero errors before anything else
+bunx tsc -b --noEmit
+
+# 4. Run the test suite
+bun run test                  # 45 tests, ~50-60s
+npm test                      # same thing without Bun
+
+# 5. Start the app
+bun run dev                   # -> http://localhost:8080
+
+# 6. Optional: verify the production bundle
+bun run build && bun run preview
+```
+
+### Notes that matter
+
+- **Let the tests run alone.** The Simulation Lab suite rolls a full 98,923-agent trajectory.
+  `vitest.config.ts` pins it to a single forked worker with a 300-second timeout; running it
+  alongside a dev server or other CPU-heavy work can starve Vitest's worker heartbeat and make a
+  passing suite exit non-zero. Expect roughly a minute. That cost is the engine actually
+  simulating citizens, not a hang.
+- **The build prints one advisory warning, not an error.** The main bundle is ~1.16 MB (~331 KB
+  gzipped), above Vite's 500 KB advisory threshold. Nothing is broken; code-splitting is future
+  work.
+- **The app runs with zero configuration.** There is no `.env` required: the engine reads the
+  Census-anchored population from source, and saved runs persist to the browser. Sign-in is a local
+  stub, and the Dashboard, Data Intelligence, Alerts, Saved Reports and Simulation Lab pages all
+  work end to end without any backend.
+- **Optional environment variables** (only needed for the corresponding integration — set them in
+  the platform's Keys/Environment UI, never commit them):
+
+  | Variable | Enables |
+  | --- | --- |
+  | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | Mirroring saved runs into the `simulations` table |
+  | `VITE_API_URL` (default `http://localhost:8000`) | The AI Policy Advisor FastAPI backend |
+  | `VITE_DECISION_ENDPOINT`, `VITE_DECISION_API_KEY` | The optional LLM decision layer in the engine |
+
+- **Honest caveat on persistence:** the browser-store path is the verified one. The Supabase mirror
+  also requires a signed-in user id, and the current auth is a localStorage stub that never
+  provides one — so that path is wired and type-checked but not exercised end to end. Connecting real
+  auth (against the existing RLS migration in `supabase/migrations/`) is the remaining piece.
+- **The Advisor backend is optional** and lives in `backend/` (FastAPI + LangGraph, reads
+  `GROQ_API_KEY`). Its dependencies are Python/`pip`, so it installs separately from the frontend.
