@@ -55,6 +55,7 @@ import {
   MapPin,
   Network,
   Play,
+  Save,
   ShieldCheck,
   TrendingDown,
   TrendingUp,
@@ -78,11 +79,13 @@ import {
   populationComposition,
   runSimulation,
   type MetricKey,
+  type PolicyVector,
   type PolicyType,
   type ProvenanceTag,
   type SimulationResult,
   type Zone,
 } from "@/simulation";
+import { saveRun } from "@/lib/runStore";
 
 /* ------------------------------------------------------------------ */
 /* Formatting                                                          */
@@ -110,6 +113,38 @@ const PROVENANCE_STYLES: Record<ProvenanceTag, string> = {
   modelled: "bg-primary/12 text-primary border-primary/30",
   assumed: "bg-muted text-muted-foreground border-border",
 };
+
+/**
+ * Metrics each instrument's documented channels target (SPEC §5.1). Read off
+ * the network's policy shifts: these are the metrics the policy is *meant* to
+ * move, so a movement elsewhere is a spillover and a movement nowhere is
+ * reported as such.
+ */
+const POLICY_DIRECT_TARGETS: Record<PolicyType, MetricKey[]> = {
+  none: [],
+  subsidy: ["employmentRatePct", "meanIncome", "wageIndex", "happinessIndex"],
+  labor: ["employmentRatePct", "meanIncome", "wageIndex"],
+  housing: ["happinessIndex", "gini", "meanIncome"],
+  education: ["gdpGrowthPct", "employmentRatePct", "wageIndex"],
+  tax: ["inflationPct", "gini"],
+  regulation: ["protestRisk", "inflationPct"],
+};
+
+/**
+ * Specific, named limitations — shown permanently, not buried in a README
+ * (SPEC §5.1). The point is that an evaluator can trust the rest of the model
+ * more, not less, for seeing exactly where its edges are.
+ */
+const MODEL_LIMITATIONS: string[] = [
+  "Income and sector are modelled, not Census-measured. Only population, sex split, households, children 0–6, literacy and worker counts are verified Census 2011 figures — see the provenance ledger in the Data tab.",
+  "No external economic shocks are modelled: no recession, no new national policy, no commodity-price movement.",
+  "One town only (Pandharpur, Solapur). There is no migration between towns and no spillover from neighbouring economies.",
+  "Response directions are checked on every run; magnitudes are not yet calibrated. Anchoring income and sector to NSSO or District Census Handbook tables is what would make the sizes claimable.",
+  "The ward-to-zone mapping is population-balanced contiguous ranges — an assumption, not sourced ward geography.",
+  "This is a counterfactual comparison tool, not a forecasting service. It carries no claim of predictive accuracy.",
+  "It is not a peer-reviewed model. Unlike the scenario explorer that inspired its presentation, there are no external reviewers and no national survey of assumptions.",
+  "Zone figures are reported after the run as a partition of surviving agents, so migration outflow reduces the reported zone population.",
+];
 
 function fmtMetric(key: MetricKey, value: number): string {
   const unit = METRIC_UNITS[key];
@@ -206,6 +241,34 @@ function ValidationRow({
   );
 }
 
+/**
+ * The permanent model-limitations panel (SPEC §5.1). Always rendered, never
+ * gated behind a run, and never written by a language model.
+ */
+function ModelLimitations() {
+  return (
+    <Card className="animate-fade-up border-warning/30">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <AlertTriangle className="h-4 w-4 text-warning" />
+          Model limitations
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          A structured, inspectable model calibrated against Census-anchored data for one pilot town — read it as a
+          disciplined comparison tool, not as a forecast.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-1.5">
+        {MODEL_LIMITATIONS.map((limitation) => (
+          <p key={limitation} className="text-xs text-muted-foreground">
+            • {limitation}
+          </p>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
@@ -229,7 +292,9 @@ export default function SimulationLab() {
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [activeMetric, setActiveMetric] = useState<MetricKey>("gdpGrowthPct");
+  const [saving, setSaving] = useState(false);
   const runToken = useRef(0);
+  const lastPolicyRef = useRef<PolicyVector | null>(null);
 
   /* --- population summary (loaded after first paint: 98,923 agents) --- */
   const [population, setPopulation] = useState<{
@@ -285,21 +350,23 @@ export default function SimulationLab() {
 
     try {
       const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
+      const policy: PolicyVector = {
+        type: policyType,
+        name: policyName.trim() || "Untitled policy",
+        intensity: intensityPct[0] / 100,
+        budget: budgetCrore[0] * 1e7,
+        durationMonths: durationMonths[0],
+        allocation: {
+          housing: alloc[0][0] / allocTotal,
+          education: alloc[1][0] / allocTotal,
+          employment: alloc[2][0] / allocTotal,
+        },
+      };
+      lastPolicyRef.current = policy;
       const res = await runSimulation(
         {
           townId: "pandharpur_in_mh",
-          policy: {
-            type: policyType,
-            name: policyName.trim() || "Untitled policy",
-            intensity: intensityPct[0] / 100,
-            budget: budgetCrore[0] * 1e7,
-            durationMonths: durationMonths[0],
-            allocation: {
-              housing: alloc[0][0] / allocTotal,
-              education: alloc[1][0] / allocTotal,
-              employment: alloc[2][0] / allocTotal,
-            },
-          },
+          policy,
           scenario,
           mode: optimize ? "optimize" : "single",
           seed: Number.isFinite(parsedSeed) ? parsedSeed : 20260101,
@@ -353,6 +420,51 @@ export default function SimulationLab() {
     a.click();
     URL.revokeObjectURL(url);
   }, [result]);
+
+  const saveCurrentRun = useCallback(async () => {
+    if (!result || !lastPolicyRef.current) return;
+    setSaving(true);
+    try {
+      const outcome = await saveRun(result, lastPolicyRef.current);
+      if (outcome.remoteError) {
+        toast.warning("Saved locally", { description: `Supabase sync failed: ${outcome.remoteError}` });
+      } else if (outcome.storage === "local+supabase") {
+        toast.success("Run saved and synced");
+      } else {
+        toast.success("Run saved locally", {
+          description: "Visible in Saved Reports. Connect Supabase to sync across devices.",
+        });
+      }
+    } finally {
+      setSaving(false);
+    }
+  }, [result]);
+
+  /**
+   * Where the policy lands, read off the run itself (SPEC §5.1).
+   *
+   * `direct` are the metrics the instrument's own channels target; `spillover`
+   * are metrics that moved without being targeted (e.g. inflation responding to
+   * a subsidy); `unaffected` moved by nothing measurable. `emergent` is not
+   * invented here — it is the engine's own warnings about second-order effects.
+   */
+  const channelBreakdown = useMemo(() => {
+    if (!result) return null;
+    const direct = POLICY_DIRECT_TARGETS[policyType] ?? [];
+    const groups = {
+      direct: [] as { key: MetricKey; delta: number }[],
+      spillover: [] as { key: MetricKey; delta: number }[],
+      unaffected: [] as MetricKey[],
+    };
+    for (const key of METRIC_KEYS) {
+      const delta = result.point[key] - result.baseline[key];
+      const material = Math.abs(delta) > Math.max(1e-9, Math.abs(result.baseline[key]) * 1e-6);
+      if (!material) groups.unaffected.push(key);
+      else if (direct.includes(key)) groups.direct.push({ key, delta });
+      else groups.spillover.push({ key, delta });
+    }
+    return { ...groups, emergent: result.warnings };
+  }, [result, policyType]);
 
   const failedChecks = result ? result.validation.filter((v) => !v.passed) : [];
 
@@ -764,6 +876,69 @@ export default function SimulationLab() {
                       </CardContent>
                     </Card>
                   </div>
+
+                  {channelBreakdown && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Where this policy lands</CardTitle>
+                        <p className="text-xs text-muted-foreground">
+                          Read off this run rather than asserted: the instrument's declared targets, the spillovers that
+                          moved without being targeted, and the second-order effects the engine flagged. A negative
+                          result is shown as plainly as a positive one.
+                        </p>
+                      </CardHeader>
+                      <CardContent className="grid gap-4 sm:grid-cols-3">
+                        <div>
+                          <p className="mb-1.5 text-xs font-medium text-primary">Directly affected</p>
+                          {channelBreakdown.direct.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">None measurable on this run.</p>
+                          ) : (
+                            channelBreakdown.direct.map(({ key, delta }) => (
+                              <div key={key} className="flex items-center justify-between py-0.5 text-[11px]">
+                                <span className="text-muted-foreground">{METRIC_LABELS[key]}</span>
+                                <span className={deltaTone(key, delta)}>{fmtDelta(key, delta)}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        <div>
+                          <p className="mb-1.5 text-xs font-medium text-warning">Spillover</p>
+                          {channelBreakdown.spillover.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">No untargeted metric moved.</p>
+                          ) : (
+                            channelBreakdown.spillover.map(({ key, delta }) => (
+                              <div key={key} className="flex items-center justify-between py-0.5 text-[11px]">
+                                <span className="text-muted-foreground">{METRIC_LABELS[key]}</span>
+                                <span className={deltaTone(key, delta)}>{fmtDelta(key, delta)}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        <div>
+                          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Unaffected</p>
+                          {channelBreakdown.unaffected.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">Every metric moved.</p>
+                          ) : (
+                            channelBreakdown.unaffected.map((key) => (
+                              <p key={key} className="py-0.5 text-[11px] text-muted-foreground">
+                                {METRIC_LABELS[key]}
+                              </p>
+                            ))
+                          )}
+                        </div>
+                        {channelBreakdown.emergent.length > 0 && (
+                          <div className="sm:col-span-3">
+                            <p className="mb-1.5 text-xs font-medium text-destructive">Newly emergent (second-order)</p>
+                            {channelBreakdown.emergent.map((warning, i) => (
+                              <p key={i} className="text-[11px] text-muted-foreground">
+                                • {warning}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
 
                   <div className="grid gap-4 lg:grid-cols-2">
                     <Card>
@@ -1326,6 +1501,10 @@ export default function SimulationLab() {
               </Tabs>
 
               <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={saveCurrentRun} disabled={saving}>
+                  <Save className="mr-1.5 h-3.5 w-3.5" />
+                  {saving ? "Saving…" : "Save run"}
+                </Button>
                 <Button size="sm" variant="outline" onClick={downloadResult}>
                   <Download className="mr-1.5 h-3.5 w-3.5" />
                   Export run JSON
@@ -1336,6 +1515,8 @@ export default function SimulationLab() {
               </div>
             </>
           )}
+
+          <ModelLimitations />
         </div>
       </div>
     </div>

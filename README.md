@@ -56,9 +56,15 @@ produces an outcome, a magnitude, or a chart series.
   directions, the identities and reproducibility, and reports exactly which checks passed.
 
 ```bash
-bun run test     # 25 tests: population, network directions, identities, determinism, search, zones
+bun run test     # 39 tests: population, network directions, identities, determinism, search, zones
+                 # two vitest projects (app / simulation) — see vitest.config.ts; the engine suite is CPU-heavy
 bun run dev      # app; the Simulation Lab page renders engine output, not mock data
 ```
 
-The full specification, the reasoning behind each decision, and an as-built record of what is
-implemented versus outstanding are in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md).
+The full specification, the reasoning behind each decision, and the verified-data build spec are
+in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). The engine's acceptance tests live in
+`src/simulation/__tests__/engine.test.ts`, with the build spec's definition-of-done checks in
+`src/simulation/__tests__/spec-dod.test.ts`. Real town datasets come from `src/lib/townData.ts`.
+Saved runs persist to the browser store (and to Supabase when it is configured) via
+`src/lib/runStore.ts`; the Dashboard, Data Intelligence, Alerts and Saved Reports pages read real
+engine/population data, not mock samples.

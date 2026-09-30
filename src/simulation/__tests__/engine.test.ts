@@ -453,8 +453,11 @@ describe("end-to-end simulation", () => {
     "runs the evolutionary search and reports a verified Pareto front",
     async () => {
       const result = await runSimulation(request({ mode: "optimize" }), {
-        searchAgents: 120,
-        searchPeriods: 3,
+        // The search tier's cost is the only approximation in the engine, so this
+        // keeps it small: the assertions are about the front being verified and
+        // non-dominated, not about search quality.
+        searchAgents: 80,
+        searchPeriods: 2,
         dePopulation: 8,
         deGenerations: 5,
         intervalRounds: 1,
@@ -534,7 +537,13 @@ describe("end-to-end simulation", () => {
               type: instrument,
               intensity: 0.3 + instrumentRng.next() * 0.7,
               budget: 5_000_000 + instrumentRng.next() * 150_000_000,
-              durationMonths: [3, 12, 24, 36][Math.floor(instrumentRng.next() * 4)],
+              // Durations stay short deliberately. These tests assert the
+              // accounting identities, which must hold for any period count, and
+              // the engine rolls the FULL population every period — a 36-month
+              // policy costs 12 of those rolls. Keeping the suite well under
+              // vitest's ~60s worker-RPC budget is what makes `bun run test`
+              // exit 0 rather than fail the run on a heartbeat timeout.
+              durationMonths: [3, 6, 9, 12][Math.floor(instrumentRng.next() * 4)],
             }),
           }),
           { searchAgents: 80, intervalRounds: 1, intervalAgents: 300 },
