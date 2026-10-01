@@ -346,12 +346,15 @@ function* trajectoryGenerator(
       if (pop.employed[i]) {
         const classFactor = [0.55, 0.78, 1.0, 1.5, 2.35, 4.3][pop.incomeClass[i]] ?? 1;
         const base = pop.income[i] > 0 ? pop.income[i] : 6000 * classFactor;
+        // Allocation is a real policy dimension, not decoration: the employment
+        // slice scales the immediate earnings lift, the education slice scales
+        // the human-capital lift. (Both weights are ASSUMPTIONS.)
         const policyEffect =
           1 +
           (policy.type === "subsidy" || policy.type === "labor" ? 0.035 : 0.012) *
             effectiveApplied *
             reach *
-            (1 + policy.allocation.employment * 0.6);
+            (1 + policy.allocation.employment * 0.6 + policy.allocation.education * 0.3);
         pop.income[i] = base * (0.985 + rng.next() * 0.03) * policyEffect;
       } else {
         pop.income[i] = 0;
@@ -360,7 +363,12 @@ function* trajectoryGenerator(
       // Savings is a stock: credited by income, drawn down by essentials.
       const essential = 3200 + 140 * rng.next();
       const credit = pop.income[i] > 0 ? (pop.income[i] - essential) / essential : -0.55;
-      const policySavings = (policy.type === "subsidy" ? 0.05 : 0) * effectiveApplied * reach;
+      // The education slice funds skills/retraining, which protects the savings
+      // stock a household can absorb. (ASSUMPTION.)
+      const policySavings =
+        ((policy.type === "subsidy" ? 0.05 : 0) + policy.allocation.education * 0.03) *
+        effectiveApplied *
+        reach;
       pop.savingsMonths[i] = clamp(
         pop.savingsMonths[i] + credit * 0.06 * spec.monthsEach + policySavings * spec.monthsEach * 0.1,
         0,
@@ -451,7 +459,15 @@ function* trajectoryGenerator(
 
       // Sentiment moves rather than teleporting: partially carried forward.
       pop.sentiment[i] = rng.next() < 0.35 ? pop.sentiment[i] : target;
-      pop.trustInGov[i] = clamp01(pop.trustInGov[i] + (target - 1) * 0.012 - (protest === 2 ? 0.01 : 0));
+      // Durable spending (housing, education) builds more trust per unit of
+      // experienced sentiment than pure transfers, so the allocation mix feeds
+      // the trust update and therefore protest propensity. (ASSUMPTION.) The
+      // no-policy baseline keeps the unweighted 1.0 so it is unchanged.
+      const allocationCare =
+        policy.type === "none" ? 1 : 0.6 + 0.7 * (policy.allocation.housing + policy.allocation.education);
+      pop.trustInGov[i] = clamp01(
+        pop.trustInGov[i] + (target - 1) * 0.012 * allocationCare - (protest === 2 ? 0.01 : 0),
+      );
       pop.protestPropensity[i] = clamp01(
         pop.protestPropensity[i] * 0.72 + (protest / 2) * 0.26 + (1 - pop.trustInGov[i]) * 0.02,
       );

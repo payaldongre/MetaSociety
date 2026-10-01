@@ -519,6 +519,25 @@ describe("end-to-end simulation", () => {
     180_000,
   );
 
+  it(
+    "changing each allocation slice changes the outcomes the engine declares it to touch",
+    async () => {
+      const base = policy({ type: "subsidy", intensity: 0.8, budget: 120_000_000, durationMonths: 12 });
+      const run = async (allocation: PolicyVector["allocation"]) =>
+        runSimulation(request({ policy: { ...base, allocation } }), { intervalRounds: 1, searchAgents: 60 });
+      const employmentHeavy = await run({ housing: 0.1, education: 0.1, employment: 0.8 });
+      const educationHeavy = await run({ housing: 0.1, education: 0.8, employment: 0.1 });
+      const housingHeavy = await run({ housing: 0.8, education: 0.1, employment: 0.1 });
+      // Allocation must not be inert: the employment slice moves earnings/Gini,
+      // and the durable-spending mix moves trust and therefore protest risk.
+      const ginis = [employmentHeavy, educationHeavy, housingHeavy].map((r) => r.point.gini);
+      const protests = [employmentHeavy, educationHeavy, housingHeavy].map((r) => r.point.protestRisk);
+      expect(new Set(ginis).size).toBeGreaterThan(1);
+      expect(new Set(protests).size).toBeGreaterThan(1);
+    },
+    240_000,
+  );
+
   // One test per instrument rather than one loop over all six. The engine tests
   // are CPU-bound and block their worker for the length of a test, so keeping
   // each of them short is what lets vitest's worker heartbeat keep up; it also

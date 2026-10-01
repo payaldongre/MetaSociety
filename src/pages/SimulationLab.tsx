@@ -144,6 +144,9 @@ const MODEL_LIMITATIONS: string[] = [
   "This is a counterfactual comparison tool, not a forecasting service. It carries no claim of predictive accuracy.",
   "It is not a peer-reviewed model. Unlike the scenario explorer that inspired its presentation, there are no external reviewers and no national survey of assumptions.",
   "Zone figures are reported after the run as a partition of surviving agents, so migration outflow reduces the reported zone population.",
+  "Inflation is reported from a three-value band (2.4% / 4.1% / 6.8%) computed from aggregate demand, so it can only take those three values. Treat it as an ordinal band, not a point forecast.",
+  "Allocation is normalised across housing / education / employment: the employment slice scales earnings, the education slice scales skills and savings, and the housing slice scales dwelling upgrades and trust. These weights are design assumptions, not calibrated estimates.",
+  "Instrument effects are not calibrated: a 12 crore subsidy at high intensity currently moves employment far more than any comparable real scheme, because the network's employment response is an uncalibrated prior shift applied every period.",
 ];
 
 /**
@@ -216,7 +219,9 @@ function StatCard({
       </div>
       <p className={`text-xs font-medium ${deltaTone(metricKey, delta)}`}>{fmtDelta(metricKey, delta)} vs no-policy</p>
       <p className="mt-0.5 text-[11px] text-muted-foreground">
-        Random-seed range {fmtMetric(metricKey, interval.p05)} – {fmtMetric(metricKey, interval.p95)}
+        {Math.abs(interval.p95 - interval.p05) < 1e-9
+          ? "Identical across random seeds (discrete / band-limited metric)"
+          : `Random-seed range ${fmtMetric(metricKey, interval.p05)} – ${fmtMetric(metricKey, interval.p95)}`}
       </p>
     </div>
   );
