@@ -123,11 +123,14 @@ bun run build && bun run preview
   | --- | --- |
   | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | Mirroring saved runs into the `simulations` table |
   | `VITE_API_URL` (default `http://localhost:8000`) | The AI Policy Advisor FastAPI backend |
-  | `VITE_DECISION_ENDPOINT`, `VITE_DECISION_API_KEY` | The optional LLM decision layer in the engine |
+  | `VITE_DECISION_ENDPOINT` | The optional decision layer in the engine — points at a server-side proxy that holds the provider key |
 
 - **Honest caveat on persistence:** the browser-store path is the verified one. The Supabase mirror
   also requires a signed-in user id, and the current auth is a localStorage stub that never
   provides one — so that path is wired and type-checked but not exercised end to end. Connecting real
   auth (against the existing RLS migration in `supabase/migrations/`) is the remaining piece.
+- **The decision-layer key is never bundled.** `VITE_DECISION_ENDPOINT` is only the URL of a
+  proxy; whatever `VITE_*` value you set is compiled into the public JavaScript bundle, so a
+  provider API key must live on the proxy (injected server-side), never in a `VITE_` variable.
 - **The Advisor backend is optional** and lives in `backend/` (FastAPI + LangGraph, reads
   `GROQ_API_KEY`). Its dependencies are Python/`pip`, so it installs separately from the frontend.

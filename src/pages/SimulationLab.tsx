@@ -290,6 +290,7 @@ export default function SimulationLab() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ phase: string; fraction: number; detail?: string } | null>(null);
   const [result, setResult] = useState<SimulationResult | null>(null);
+  const [ranSignature, setRanSignature] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [activeMetric, setActiveMetric] = useState<MetricKey>("gdpGrowthPct");
   const [saving, setSaving] = useState(false);
@@ -326,6 +327,28 @@ export default function SimulationLab() {
     return counts;
   }, []);
 
+  // A signature of every input that changes the result. Compared against the
+  // signature captured when the last run completed, so the UI can warn when the
+  // displayed numbers belong to a previous configuration.
+  const configSignature = useMemo(
+    () =>
+      JSON.stringify({
+        policyType,
+        policyName,
+        intensityPct,
+        budgetCrore,
+        durationMonths,
+        alloc,
+        scenarioKey,
+        optimize,
+        engineKind,
+        seed,
+      }),
+    [alloc, budgetCrore, durationMonths, engineKind, intensityPct, optimize, policyName, policyType, scenarioKey, seed],
+  );
+
+  const resultsStale = result !== null && ranSignature !== null && ranSignature !== configSignature;
+
   const run = useCallback(async () => {
     const token = runToken.current + 1;
     runToken.current = token;
@@ -338,12 +361,13 @@ export default function SimulationLab() {
 
     // Remote adapters are optional. Without a configured endpoint the engine
     // falls back to the deterministic rule table and says so in its stats.
+    //
+    // The endpoint must be a server-side proxy, never a direct provider URL with
+    // a bundled key: anything read from import.meta.env is compiled into the
+    // client bundle and shipped to every visitor. The proxy holds the provider
+    // secret and injects it; the browser only ever sees the proxy URL.
     const remoteEndpoint = (import.meta.env.VITE_DECISION_ENDPOINT as string | undefined) ?? undefined;
-    const remoteKey = (import.meta.env.VITE_DECISION_API_KEY as string | undefined) ?? undefined;
-    const decisionEngine = createDecisionEngine(
-      engineKind,
-      remoteEndpoint ? { endpoint: remoteEndpoint, apiKey: remoteKey } : {},
-    );
+    const decisionEngine = createDecisionEngine(engineKind, remoteEndpoint ? { endpoint: remoteEndpoint } : {});
 
     // Let the spinner paint before the (synchronous, CPU-bound) engine starts.
     await new Promise((resolve) => window.setTimeout(resolve, 30));
@@ -382,6 +406,7 @@ export default function SimulationLab() {
       );
       if (runToken.current !== token) return;
       setResult(res);
+      setRanSignature(configSignature);
       toast.success(
         optimize ? "Simulation and policy search complete" : "Simulation complete",
         { description: `${fmtInt(res.populationSize)} agents · ${res.periods} periods · seed ${res.seed}` },
@@ -400,6 +425,7 @@ export default function SimulationLab() {
   }, [
     alloc,
     budgetCrore,
+    configSignature,
     durationMonths,
     engineKind,
     intensityPct,
@@ -717,6 +743,24 @@ export default function SimulationLab() {
 
           {result && !running && (
             <>
+              {resultsStale && (
+                <Card className="animate-fade-up border-warning/40 bg-warning/5">
+                  <CardContent className="flex items-start gap-3 pt-6">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+                    <div>
+                      <p className="text-sm font-medium text-card-foreground">
+                        The configuration changed since this run
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        These results were produced by the previous configuration — run {"{result.runId}"} · seed{" "}
+                        {result.seed} · {result.periods} periods. They do not reflect your current settings. Press run
+                        again to update them.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* ---------------- headline ---------------- */}
               <div className="animate-fade-up grid grid-cols-2 gap-3 lg:grid-cols-3">
                 {METRIC_KEYS.map((key) => (

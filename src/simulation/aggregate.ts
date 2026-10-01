@@ -8,7 +8,7 @@
  */
 
 import { WORKING_AGE_MIN } from "./census";
-import { gini, mean, quantile } from "./rng";
+import { clamp01, gini, mean, quantile } from "./rng";
 import { EMPLOYMENT_STATUSES, INCOME_CLASSES, INCOME_CLASS_LABELS, SECTORS, SENTIMENTS, ZONES } from "./types";
 import type { MetricKey, Population, Zone } from "./types";
 
@@ -109,7 +109,7 @@ export function computeLevels(input: AggregationInput): PeriodLevels {
   let wageSum = 0;
   let wageCount = 0;
   let happinessSum = 0;
-  let protestUnion = 1;
+  let protestSum = 0;
   let gdpLevel = 0;
   const perCapitaIncome = new Float64Array(pop.size);
   let perCapitaCount = 0;
@@ -135,7 +135,7 @@ export function computeLevels(input: AggregationInput): PeriodLevels {
     }
 
     happinessSum += [0, 0.5, 1][pop.sentiment[i]] ?? 0.5;
-    protestUnion *= 1 - Math.min(1, Math.max(0, pop.protestPropensity[i]));
+    protestSum += clamp01(pop.protestPropensity[i]);
 
     const householdPerCapita = pop.householdIncome[pop.household[i]] / pop.householdSize[pop.household[i]];
     perCapitaIncome[i] = householdPerCapita;
@@ -155,7 +155,10 @@ export function computeLevels(input: AggregationInput): PeriodLevels {
     inflationPct: INFLATION_BAND_PCT[input.inflationBand] ?? 4.1,
     happinessScore: active > 0 ? (happinessSum / active) * 100 : 0,
     gini: gini(householdPerCapitaActive, perCapitaCount),
-    protestRisk: 1 - protestUnion,
+    // Mean per-agent protest propensity, NOT the union over 98,923 agents.
+    // A union reads ~100% for any non-zero per-agent probability, so it has
+    // no information; the mean is the share-weighted risk the metric names.
+    protestRisk: active > 0 ? protestSum / active : 0,
     migrationOutflow: input.migrationOutflow,
     meanHouseholdIncomePerCapita: mean(householdPerCapitaActive, perCapitaCount),
     budgetOutlay: input.budgetSpend,
@@ -357,7 +360,7 @@ export function zoneMetrics(
   let employed = 0;
   let workingAge = 0;
   let happiness = 0;
-  let protestUnion = 1;
+  let protestSum = 0;
   let active = 0;
   let gdpLevel = 0;
   let wageSum = 0;
@@ -379,7 +382,7 @@ export function zoneMetrics(
     }
     incomes.push(pop.householdIncome[pop.household[i]] / pop.householdSize[pop.household[i]]);
     happiness += [0, 0.5, 1][pop.sentiment[i]] ?? 0.5;
-    protestUnion *= 1 - Math.min(1, Math.max(0, pop.protestPropensity[i]));
+    protestSum += clamp01(pop.protestPropensity[i]);
   }
 
   const sorted = Float64Array.from(incomes).sort();
@@ -392,7 +395,8 @@ export function zoneMetrics(
   const employmentRate = workingAge > 0 ? (employed / workingAge) * 100 : 0;
   const meanIncome = sorted.length > 0 ? mean(sorted) : 0;
   const happinessIndex = active > 0 ? (happiness / active) * 100 : 0;
-  const protest = (1 - protestUnion) * 100;
+  // Same correction as computeLevels: mean per-agent propensity, not a union.
+  const protest = (active > 0 ? protestSum / active : 0) * 100;
   const growth =
     options.baselineGdpLevel > 0 ? ((gdpLevel - options.baselineGdpLevel) / options.baselineGdpLevel) * 100 : 0;
 

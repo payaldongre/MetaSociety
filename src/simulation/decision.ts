@@ -41,8 +41,14 @@ import type {
 export interface DecisionEngineOptions {
   /** Below this confidence the decision is escalated to a human (§8.2 U5). */
   confidenceThreshold?: number;
-  /** Remote endpoint for the model-backed adapters. */
+  /** Remote endpoint for the model-backed adapters. Prefer a server-side proxy. */
   endpoint?: string;
+  /**
+   * Bearer token for the endpoint. NEVER set this from client-side code: any
+   * `import.meta.env.VITE_*` value is compiled into the public bundle. Pass it
+   * only from a server/proxy that already holds the provider secret; a proxy
+   * endpoint with no client-held key is the supported configuration.
+   */
   apiKey?: string;
   timeoutMs?: number;
   /** Deterministic jitter seed for the rule engine's tie-breaking. */
@@ -194,9 +200,10 @@ function createRemoteEngine(
   const stats = new StatsTracker(name, threshold);
 
   const call = async (payload: unknown): Promise<RemoteAnswer[] | null> => {
-    if (!options.endpoint || !options.apiKey) {
+    if (!options.endpoint) {
       // Unconfigured: record the degradation so the run reports it rather than
-      // silently behaving as if the model answered.
+      // silently behaving as if the model answered. A missing apiKey is fine —
+      // a server-side proxy injects the provider secret.
       stats.recordFallback();
       return null;
     }
@@ -205,7 +212,10 @@ function createRemoteEngine(
       const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
       const res = await fetch(options.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` },
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}),
+        },
         body: JSON.stringify(payload),
         signal: controller.signal,
       });

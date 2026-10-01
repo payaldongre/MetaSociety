@@ -92,6 +92,33 @@ describe("spec §3 — accounting identities fail loudly", () => {
   });
 });
 
+describe("spec §6.7 — protest risk is a mean per-agent propensity, not a union", () => {
+  it("reports the mean and is not saturated by the ~99k-agent population", () => {
+    const level = computeLevels({
+      pop,
+      inflationBand: 1,
+      budgetSpend: 0,
+      taxRevenue: 0,
+      transfersAssigned: 0,
+      externalFunding: 0,
+      migrationOutflow: 0,
+      declaredBudget: 0,
+      cumulativeSpend: 0,
+    });
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < pop.size; i += 1) {
+      if (!pop.active[i]) continue;
+      sum += Math.min(1, Math.max(0, pop.protestPropensity[i]));
+      count += 1;
+    }
+    expect(level.protestRisk).toBeCloseTo(sum / count, 12);
+    // "Probability at least one of ~99k citizens protests" is forced to ~1 for
+    // any non-zero per-agent probability; a mean is not.
+    expect(level.protestRisk).toBeLessThan(1);
+  });
+});
+
 describe("spec §3 — uncertainty is a distribution, not a decoration", () => {
   it("orders the interval and collapses a degenerate sample", () => {
     const spread = intervalFor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);

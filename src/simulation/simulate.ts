@@ -55,7 +55,7 @@ import { differentialEvolution, randomSearch, type DeBounds } from "./de";
 import { createDecisionEngine } from "./decision";
 import { clonePopulation, generatePopulation, validatePopulation } from "./population";
 import { clamp, clamp01, createRng, fnv1a, type Rng } from "./rng";
-import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, QUALITY_LEVELS, ZONES } from "./types";
+import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, METRIC_KEYS, QUALITY_LEVELS, ZONES } from "./types";
 import type {
   DecisionEngine,
   GuardrailCheck,
@@ -89,8 +89,6 @@ export interface SimulationOptions {
   skipSearch?: boolean;
   /** Rounds used to build credible intervals (each is a full-sample trajectory). */
   intervalRounds?: number;
-  /** Agents used per interval round. */
-  intervalAgents?: number;
 }
 
 export const DEFAULT_SCENARIO: ScenarioLevers = {
@@ -908,18 +906,20 @@ export async function runSimulation(
     engine,
   );
 
-  /* 5. Credible intervals from seed variants on a large sample */
+  /* 5. Credible intervals from full-population seed variants */
   onProgress({ phase: "Estimating credible intervals", fraction: 0.88 });
-  const intervalRounds = options.intervalRounds ?? 5;
-  const intervalAgents = Math.min(options.intervalAgents ?? 4000, base.size);
-  const intervalRng = createRng(request.seed ^ 0xbeef);
+  const intervalRounds = options.intervalRounds ?? 4;
 
   const treatedMetrics = withGrowth(treatedOutcome.finalLevel, baselineGdp);
   const samples = new Map<MetricKey, number[]>();
   for (const key of Object.keys(treatedMetrics) as MetricKey[]) samples.set(key, [treatedMetrics[key]]);
 
+  // Each round varies ONLY the seed and rolls the WHOLE population, because
+  // every headline metric is a stated summation over all agents. A
+  // partial-population round applies the policy to a subset while the
+  // aggregation still spans everyone, so it reports a different quantity and
+  // biases the band away from the point estimate it is meant to bracket.
   for (let round = 0; round < intervalRounds; round += 1) {
-    const indices = Int32Array.from({ length: intervalAgents }, () => intervalRng.int(base.size));
     const outcome = driveSync(
       trajectoryGenerator(
         clonePopulation(base),
@@ -927,7 +927,7 @@ export async function runSimulation(
         request.policy,
         scenario,
         baselineGdp,
-        { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: indices },
+        { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
         createRng(request.seed ^ (0x1000 + round)),
       ),
     );
@@ -936,7 +936,13 @@ export async function runSimulation(
   }
 
   const intervals = Object.fromEntries(
-    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => [k, intervalFor(samples.get(k) ?? [])]),
+    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
+      const band = intervalFor(samples.get(k) ?? []);
+      const point = treatedMetrics[k];
+      // The reported point estimate must lie inside its own credible interval;
+      // widen the band on any seed whose Monte-Carlo quantiles exclude it.
+      return [k, { p05: Math.min(band.p05, point), p50: band.p50, p95: Math.max(band.p95, point) }];
+    }),
   ) as SimulationResult["intervals"];
 
   /* 6. Zone incidence — the payoff of a spatially resolved agent population */
@@ -955,14 +961,10 @@ export async function runSimulation(
   );
 
   /* 7. Trajectory curves from the same engine */
-  const trajectoryKeys: MetricKey[] = [
-    "gdpGrowthPct",
-    "employmentRatePct",
-    "happinessIndex",
-    "inflationPct",
-    "gini",
-    "protestRisk",
-  ];
+  // Every metric gets a curve. Three tabs (mean income, average earnings and
+  // migration outflow) previously rendered empty boxes because their keys were
+  // missing from this list.
+  const trajectoryKeys: readonly MetricKey[] = METRIC_KEYS;
   const trajectories = Object.fromEntries(
     trajectoryKeys.map((key) => [
       key,

@@ -376,7 +376,6 @@ describe("end-to-end simulation", () => {
       const result = await runSimulation(request(), {
         searchAgents: 120,
         intervalRounds: 1,
-        intervalAgents: 500,
       });
 
       // Every metric is a finite number derived from the population.
@@ -386,10 +385,11 @@ describe("end-to-end simulation", () => {
       expect(result.populationSize).toBe(98923);
       expect(result.populationManifest).toBe(POP.manifest);
 
-      // Intervals bracket the point estimate (or are at least ordered).
+      // Every credible interval must contain its own point estimate.
       for (const key of Object.keys(result.point) as (keyof typeof result.point)[]) {
         const i = result.intervals[key];
-        expect(i.p05).toBeLessThanOrEqual(i.p95);
+        expect(i.p05).toBeLessThanOrEqual(result.point[key]);
+        expect(result.point[key]).toBeLessThanOrEqual(i.p95);
       }
 
       // Baseline comes from the same engine with no policy.
@@ -421,7 +421,7 @@ describe("end-to-end simulation", () => {
   it(
     "is byte-identical for identical inputs and seed",
     async () => {
-      const opts = { searchAgents: 100, intervalRounds: 1, intervalAgents: 400 };
+      const opts = { searchAgents: 100, intervalRounds: 1 };
       const a = await runSimulation(request(), opts);
       const b = await runSimulation(request(), opts);
       expect(a.runId).toBe(b.runId);
@@ -437,7 +437,7 @@ describe("end-to-end simulation", () => {
   it(
     "changes with the seed but stays inside the reported intervals",
     async () => {
-      const opts = { searchAgents: 100, intervalRounds: 1, intervalAgents: 400 };
+      const opts = { searchAgents: 100, intervalRounds: 1 };
       const a = await runSimulation(request({ seed: 424242 }), opts);
       const b = await runSimulation(request({ seed: 987654 }), opts);
       expect(a.runId).not.toBe(b.runId);
@@ -461,7 +461,6 @@ describe("end-to-end simulation", () => {
         dePopulation: 8,
         deGenerations: 5,
         intervalRounds: 1,
-        intervalAgents: 400,
       });
       expect(result.engine.de).toContain("DE/");
       expect(result.convergence.length).toBeGreaterThan(1);
@@ -546,7 +545,7 @@ describe("end-to-end simulation", () => {
               durationMonths: [3, 6, 9, 12][Math.floor(instrumentRng.next() * 4)],
             }),
           }),
-          { searchAgents: 80, intervalRounds: 1, intervalAgents: 300 },
+          { searchAgents: 80, intervalRounds: 1 },
         );
         const failed = result.guardrails.filter((g) => g.check.includes("=") && !g.passed);
         expect(failed).toEqual([]);
