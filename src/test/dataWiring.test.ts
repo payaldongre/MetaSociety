@@ -16,6 +16,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { effectivenessScore, listRuns, saveRun, supabaseConfigured } from "@/lib/runStore";
+import { isResultsStale } from "@/pages/SimulationLab";
 import type { PolicyVector, SimulationResult } from "@/simulation/types";
 
 const POLICY: PolicyVector = {
@@ -114,5 +115,20 @@ describe("run persistence", () => {
   it("survives a stale or corrupt stored payload", () => {
     localStorage.setItem("meta_society_simulations", "{not json");
     expect(listRuns()).toEqual([]);
+  });
+});
+
+describe("stale-results indicator", () => {
+  it("is silent before any run, and after a run that matches the current config", () => {
+    expect(isResultsStale(null, "subsidy|65|120000000|24")).toBe(false);
+    expect(isResultsStale("subsidy|65|120000000|24", "subsidy|65|120000000|24")).toBe(false);
+  });
+
+  it("flags results as out of date whenever any policy input changes", () => {
+    const ran = "subsidy|65|120000000|24";
+    // Duration dragged from 24 to 39 months, name edited, intensity moved.
+    expect(isResultsStale(ran, "subsidy|65|120000000|39")).toBe(true);
+    expect(isResultsStale(ran, "subsidy|50|120000000|24")).toBe(true);
+    expect(isResultsStale(ran, "housing|65|120000000|24")).toBe(true);
   });
 });

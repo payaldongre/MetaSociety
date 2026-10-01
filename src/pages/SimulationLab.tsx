@@ -146,6 +146,15 @@ const MODEL_LIMITATIONS: string[] = [
   "Zone figures are reported after the run as a partition of surviving agents, so migration outflow reduces the reported zone population.",
 ];
 
+/**
+ * A run's configuration is captured as a signature. Results are stale when the
+ * current inputs no longer match the signature captured at run time.
+ * Exported so it can be unit-tested without driving the whole page.
+ */
+export function isResultsStale(ranSignature: string | null, currentSignature: string): boolean {
+  return ranSignature !== null && ranSignature !== currentSignature;
+}
+
 function fmtMetric(key: MetricKey, value: number): string {
   const unit = METRIC_UNITS[key];
   if (unit === "₹") {
@@ -207,7 +216,7 @@ function StatCard({
       </div>
       <p className={`text-xs font-medium ${deltaTone(metricKey, delta)}`}>{fmtDelta(metricKey, delta)} vs no-policy</p>
       <p className="mt-0.5 text-[11px] text-muted-foreground">
-        90% interval {fmtMetric(metricKey, interval.p05)} – {fmtMetric(metricKey, interval.p95)}
+        Random-seed range {fmtMetric(metricKey, interval.p05)} – {fmtMetric(metricKey, interval.p95)}
       </p>
     </div>
   );
@@ -347,7 +356,10 @@ export default function SimulationLab() {
     [alloc, budgetCrore, durationMonths, engineKind, intensityPct, optimize, policyName, policyType, scenarioKey, seed],
   );
 
-  const resultsStale = result !== null && ranSignature !== null && ranSignature !== configSignature;
+  // Allocation shares are normalised to sum to 1 before the run; show the
+  // effective share so a 15/15/20 slider split is not read as an unallocated 50%.
+  const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
+  const resultsStale = isResultsStale(ranSignature, configSignature);
 
   const run = useCallback(async () => {
     const token = runToken.current + 1;
@@ -609,7 +621,9 @@ export default function SimulationLab() {
                 <div key={label} className="space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] text-muted-foreground">{label}</span>
-                    <span className="text-[11px] font-medium text-card-foreground">{alloc[index][0]}%</span>
+                    <span className="text-[11px] font-medium text-card-foreground">
+                      {alloc[index][0]}% <span className="text-muted-foreground">→ {((alloc[index][0] / allocTotal) * 100).toFixed(0)}% of budget</span>
+                    </span>
                   </div>
                   <Slider
                     value={alloc[index]}
@@ -626,6 +640,11 @@ export default function SimulationLab() {
                   />
                 </div>
               ))}
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                The three shares are normalised to sum to 100% before the run, so the whole budget is always split
+                across these channels — there is no unallocated remainder. A 15 / 15 / 20 split becomes 30% / 30% /
+                40% of the budget.
+              </p>
             </div>
 
             <div className="space-y-1.5">
@@ -734,8 +753,8 @@ export default function SimulationLab() {
                 <FlaskConical className="mb-4 h-14 w-14 text-muted-foreground/25" />
                 <p className="max-w-md text-sm text-muted-foreground">
                   Configure an instrument and run it. The engine simulates every citizen agent across each period,
-                  rolls the town layer back into the population, and reports outcomes with 90% credible intervals,
-                  zone incidence and its own accounting checks.
+                  rolls the town layer back into the population, and reports outcomes with a random-seed variation
+                  range, zone incidence and its own accounting checks.
                 </p>
               </CardContent>
             </Card>
@@ -789,8 +808,10 @@ export default function SimulationLab() {
                     <CardHeader className="pb-2">
                       <CardTitle className="text-base">Trajectory · {METRIC_LABELS[activeMetric]}</CardTitle>
                       <p className="text-xs text-muted-foreground">
-                        No-policy baseline and simulated path over {result.periods} periods. The interval on each card
-                        is the 5th–95th percentile across seed variants at the final period.
+                        No-policy baseline and simulated path over {result.periods} periods. The range on each card is
+                        the 5th–95th percentile across random seeds at the final period — variation from Monte-Carlo
+                        sampling only, not from model assumptions. The headline is the seed you chose, so it can sit at
+                        either end of that range rather than the middle.
                       </p>
                     </CardHeader>
                     <CardContent className="space-y-3">

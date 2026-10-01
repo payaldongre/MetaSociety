@@ -15,7 +15,7 @@
  *      (reduced agent sample, coarser periods — labelled as such, and the only
  *      approximation in the system)
  *   4. full-population trajectory for the chosen vector
- *   5. credible intervals from seed variants on a large sample
+ *   5. a random-seed variation range from full-population seed variants
  *   6. zone incidence, causal attribution, alerts, guardrails, identities
  *
  * The period loop is a synchronous generator that YIELDS a decision request at
@@ -87,7 +87,7 @@ export interface SimulationOptions {
   dePopulation?: number;
   deGenerations?: number;
   skipSearch?: boolean;
-  /** Rounds used to build credible intervals (each is a full-sample trajectory). */
+  /** Rounds used to build the random-seed variation range (each is a full-sample trajectory). */
   intervalRounds?: number;
 }
 
@@ -907,7 +907,7 @@ export async function runSimulation(
   );
 
   /* 5. Credible intervals from full-population seed variants */
-  onProgress({ phase: "Estimating credible intervals", fraction: 0.88 });
+  onProgress({ phase: "Estimating the random-seed variation range", fraction: 0.88 });
   const intervalRounds = options.intervalRounds ?? 4;
 
   const treatedMetrics = withGrowth(treatedOutcome.finalLevel, baselineGdp);
@@ -939,7 +939,7 @@ export async function runSimulation(
     (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
       const band = intervalFor(samples.get(k) ?? []);
       const point = treatedMetrics[k];
-      // The reported point estimate must lie inside its own credible interval;
+      // The reported point estimate must lie inside its own seed-variation range;
       // widen the band on any seed whose Monte-Carlo quantiles exclude it.
       return [k, { p05: Math.min(band.p05, point), p50: band.p50, p95: Math.max(band.p95, point) }];
     }),

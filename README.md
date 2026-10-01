@@ -1,21 +1,21 @@
 # A brief description about the project
-- We start by uploading real-world town data into the system.
+- We start with a synthetic population anchored to Census 2011 totals for Pandharpur, generated field by field.
 
-- The platform analyzes this data and presents it through interactive dashboards and simple insights, making it easy to understand the current situation.
+- The platform analyzes this population and the town datasets and presents them through interactive dashboards and simple insights, making it easy to understand the current situation.
 
 - Next, using the AI Policy Advisor, users can define their goals — for example, reducing unemployment or improving economic growth.
 
 - Based on this, the system suggests suitable policies along with expected outcomes and risks.
 
-- These policies can then be tested in the Simulation Lab, where a virtual town with AI citizens reacts realistically to each decision.
+- These policies can then be tested in the Simulation Lab, where a virtual town of agent-citizens responds to each decision. Response directions are checked on every run; **magnitudes are not yet calibrated** against an evaluated real programme.
 
 - The platform then shows the economic and social impact, including key metrics, risk alerts, and comparisons between different scenarios.
 
-- This allows policymakers to evaluate decisions before implementing them in the real world.
+- This allows policymakers to explore the direction of a decision before implementing it in the real world. It is a **directional scenario comparison tool, not a forecasting service**.
 
 - All simulation results are stored securely, ensuring reliability and future analysis.
 
-- Meta Society transforms policymaking from guesswork into a data-driven and predictive process.
+- Meta Society turns policy exploration into a data-driven, inspectable scenario comparison rather than guesswork.
 
 - Instead of experimenting on real people, we experiment on a virtual society first.
 -----------------------------------------------------------------------------------------------------------------------------------------
@@ -124,6 +124,12 @@ bun run build && bun run preview
   | `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | Mirroring saved runs into the `simulations` table |
   | `VITE_API_URL` (default `http://localhost:8000`) | The AI Policy Advisor FastAPI backend |
   | `VITE_DECISION_ENDPOINT` | The optional decision layer in the engine — points at a server-side proxy that holds the provider key |
+
+  > **Never put a real secret in a `VITE_*` variable.** Vite compiles every `VITE_*` value into the public
+  > JavaScript bundle, so `VITE_DECISION_API_KEY` (or any provider key) placed here would be readable by every
+  > visitor. `VITE_SUPABASE_PUBLISHABLE_KEY` is the one exception: it is a *publishable* key, safe by design.
+  > Provider secrets belong on a server-side proxy (see `VITE_DECISION_ENDPOINT`) or in the Convex/server env,
+  > set through the platform's Keys/Environment UI — never in a committed `.env` file.
 
 - **Honest caveat on persistence:** the browser-store path is the verified one. The Supabase mirror
   also requires a signed-in user id, and the current auth is a localStorage stub that never

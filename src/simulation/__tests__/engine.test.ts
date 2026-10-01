@@ -385,7 +385,7 @@ describe("end-to-end simulation", () => {
       expect(result.populationSize).toBe(98923);
       expect(result.populationManifest).toBe(POP.manifest);
 
-      // Every credible interval must contain its own point estimate.
+      // Every interval must contain its own point estimate.
       for (const key of Object.keys(result.point) as (keyof typeof result.point)[]) {
         const i = result.intervals[key];
         expect(i.p05).toBeLessThanOrEqual(result.point[key]);
