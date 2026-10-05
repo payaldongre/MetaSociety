@@ -31,6 +31,7 @@ export {
   DOMAIN_LEGENDS,
   FEEDBACK_NODES,
   MICRO_NODES,
+  NODE_REGISTRY,
   TOWN_NODES,
   buildBn,
   applyEvidence,
@@ -40,9 +41,21 @@ export {
   interventionEffect,
   policyResponse,
   posteriorDistribution,
+  samplePass,
   withIntervention,
   validateBnDirection,
+  type NodeSpec,
 } from "./bn";
+export {
+  INSTRUMENTS,
+  LIVE_INSTRUMENTS,
+  allocationFor,
+  instrumentFor,
+  instrumentUsesAllocation,
+  type InstrumentDefinition,
+  type InstrumentParam,
+  type InstrumentParamId,
+} from "./instruments";
 export {
   LOWER_IS_BETTER,
   METRIC_LABELS,
@@ -73,3 +86,11 @@ export {
   runSimulation,
   type SimulationOptions,
 } from "./simulate";
+export {
+  bestInLineage,
+  describeLineageKey,
+  lineageHistory,
+  lineageKeyFor,
+  policyDistance,
+  type LineageRecord,
+} from "./lineage";

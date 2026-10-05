@@ -66,6 +66,7 @@ import {
   CENSUS,
   FIELD_LEDGER,
   GENERATOR_VERSION,
+  LIVE_INSTRUMENTS,
   LOWER_IS_BETTER,
   METRIC_KEYS,
   METRIC_LABELS,
@@ -75,17 +76,23 @@ import {
   TOWN_DISTRICT,
   TOWN_NAME,
   createDecisionEngine,
+  describeLineageKey,
+  encodePolicy,
   getPopulation,
+  instrumentFor,
+  instrumentUsesAllocation,
+  lineageKeyFor,
   populationComposition,
   runSimulation,
   type MetricKey,
-  type PolicyVector,
+  type MetricUncertainty,
   type PolicyType,
+  type PolicyVector,
   type ProvenanceTag,
   type SimulationResult,
   type Zone,
 } from "@/simulation";
-import { saveRun } from "@/lib/runStore";
+import { listRuns, saveRun, type SavedRun } from "@/lib/runStore";
 
 /* ------------------------------------------------------------------ */
 /* Formatting                                                          */
@@ -98,36 +105,17 @@ const ZONE_LABELS: Record<Zone, string> = {
   south: "South",
 };
 
-const POLICY_TYPES: { value: PolicyType; label: string }[] = [
-  { value: "subsidy", label: "Subsidy / transfer" },
-  { value: "tax", label: "Tax change" },
-  { value: "labor", label: "Labour market programme" },
-  { value: "housing", label: "Housing programme" },
-  { value: "education", label: "Education / skills" },
-  { value: "regulation", label: "Regulation" },
-];
+/** Instruments come from the dictionary, so the picker cannot drift from it. */
+const POLICY_TYPES: { value: PolicyType; label: string }[] = LIVE_INSTRUMENTS.map((i) => ({
+  value: i.id,
+  label: i.label,
+}));
 
 const PROVENANCE_STYLES: Record<ProvenanceTag, string> = {
   census2011: "bg-success/12 text-success border-success/30",
   estimated: "bg-warning/12 text-warning border-warning/30",
   modelled: "bg-primary/12 text-primary border-primary/30",
   assumed: "bg-muted text-muted-foreground border-border",
-};
-
-/**
- * Metrics each instrument's documented channels target (SPEC §5.1). Read off
- * the network's policy shifts: these are the metrics the policy is *meant* to
- * move, so a movement elsewhere is a spillover and a movement nowhere is
- * reported as such.
- */
-const POLICY_DIRECT_TARGETS: Record<PolicyType, MetricKey[]> = {
-  none: [],
-  subsidy: ["employmentRatePct", "meanIncome", "wageIndex", "happinessIndex"],
-  labor: ["employmentRatePct", "meanIncome", "wageIndex"],
-  housing: ["happinessIndex", "gini", "meanIncome"],
-  education: ["gdpGrowthPct", "employmentRatePct", "wageIndex"],
-  tax: ["inflationPct", "gini"],
-  regulation: ["protestRisk", "inflationPct"],
 };
 
 /**
@@ -201,15 +189,18 @@ function StatCard({
   metricKey,
   value,
   baseline,
-  interval,
+  uncertainty,
 }: {
   metricKey: MetricKey;
   value: number;
   baseline: number;
-  interval: { p05: number; p50: number; p95: number };
+  uncertainty: MetricUncertainty;
 }) {
   const delta = value - baseline;
   const Icon = Math.abs(delta) < 1e-9 ? Info : isBetter(metricKey, delta) ? TrendingUp : TrendingDown;
+  const lowers = LOWER_IS_BETTER.includes(metricKey);
+  const improvedPct = Math.round(uncertainty.probabilityImproved * 100);
+  const single = uncertainty.seedCount <= 1;
   return (
     <div className="rounded-lg border bg-card p-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{METRIC_LABELS[metricKey]}</p>
@@ -217,11 +208,15 @@ function StatCard({
         <span className="text-lg font-semibold text-card-foreground">{fmtMetric(metricKey, value)}</span>
         <Icon className={`h-3.5 w-3.5 ${deltaTone(metricKey, delta)}`} />
       </div>
-      <p className={`text-xs font-medium ${deltaTone(metricKey, delta)}`}>{fmtDelta(metricKey, delta)} vs no-policy</p>
+      <p className={`text-xs font-medium ${improvedPct >= 50 ? "text-success" : improvedPct > 0 ? "text-warning" : "text-muted-foreground"}`}>
+        {single
+          ? `${fmtDelta(metricKey, delta)} vs no-policy`
+          : `${improvedPct}% probability this policy ${lowers ? "reduces" : "increases"} ${METRIC_LABELS[metricKey].toLowerCase()}`}
+      </p>
       <p className="mt-0.5 text-[11px] text-muted-foreground">
-        {Math.abs(interval.p95 - interval.p05) < 1e-9
-          ? "Identical across random seeds (discrete / band-limited metric)"
-          : `Random-seed range ${fmtMetric(metricKey, interval.p05)} – ${fmtMetric(metricKey, interval.p95)}`}
+        {single
+          ? "Too few confidence runs to state a probability — raise the confidence-run count"
+          : `Median effect ${fmtDelta(metricKey, uncertainty.medianDelta)} · 90% interval ${fmtDelta(metricKey, uncertainty.p05Delta)} to ${fmtDelta(metricKey, uncertainty.p95Delta)} over ${uncertainty.seedCount} seeds`}
       </p>
     </div>
   );
@@ -299,6 +294,12 @@ export default function SimulationLab() {
   const [optimize, setOptimize] = useState(false);
   const [engineKind, setEngineKind] = useState<"rule" | "jev" | "llm">("rule");
   const [seed, setSeed] = useState("20260101");
+  const [confidenceRounds, setConfidenceRounds] = useState([16]);
+  const instrument = instrumentFor(policyType);
+  const usesAllocation = instrumentUsesAllocation(policyType);
+  /** Previous-best run in this lineage, for the second comparison mode (Part C3). */
+  const [lineageBest, setLineageBest] = useState<SavedRun | null>(null);
+  const [lineageSize, setLineageSize] = useState(0);
 
   /* --- run state --- */
   const [running, setRunning] = useState(false);
@@ -357,13 +358,30 @@ export default function SimulationLab() {
         optimize,
         engineKind,
         seed,
+        confidenceRounds,
       }),
-    [alloc, budgetCrore, durationMonths, engineKind, intensityPct, optimize, policyName, policyType, scenarioKey, seed],
+    [
+      alloc,
+      budgetCrore,
+      confidenceRounds,
+      durationMonths,
+      engineKind,
+      intensityPct,
+      optimize,
+      policyName,
+      policyType,
+      scenarioKey,
+      seed,
+    ],
   );
 
   // Allocation shares are normalised to sum to 1 before the run; show the
   // effective share so a 15/15/20 slider split is not read as an unallocated 50%.
   const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
+  // An all-equal split normalises to 33/33/33 regardless of magnitude (90/90/90
+  // is the same input as 5/5/5), so it is never informative and is flagged.
+  const allocEqual =
+    usesAllocation && alloc[0][0] === alloc[1][0] && alloc[1][0] === alloc[2][0];
   const resultsStale = isResultsStale(ranSignature, configSignature);
 
   const run = useCallback(async () => {
@@ -404,6 +422,17 @@ export default function SimulationLab() {
         },
       };
       lastPolicyRef.current = policy;
+
+      // Part C: this run's lineage — same instrument AND same parameter band.
+      // Only its own history seeds the search, so a healthcare run can never
+      // inherit from a regulation run. The previous-best member is kept for the
+      // "vs previous best in this lineage" comparison.
+      const key = lineageKeyFor(policy);
+      const history = listRuns()
+        .filter((r) => r.lineageKey === key)
+        .sort((a, b) => b.effectivenessScore - a.effectivenessScore);
+      const lineageSeeds = history.slice(0, 8).map((r) => encodePolicy(r.policy));
+
       const res = await runSimulation(
         {
           townId: "pandharpur_in_mh",
@@ -416,6 +445,8 @@ export default function SimulationLab() {
         },
         {
           decisionEngine,
+          intervalRounds: confidenceRounds[0],
+          lineageSeeds,
           onProgress: (p) => {
             if (runToken.current === token) setProgress(p);
           },
@@ -424,6 +455,8 @@ export default function SimulationLab() {
       if (runToken.current !== token) return;
       setResult(res);
       setRanSignature(configSignature);
+      setLineageBest(history[0] ?? null);
+      setLineageSize(history.length);
       toast.success(
         optimize ? "Simulation and policy search complete" : "Simulation complete",
         { description: `${fmtInt(res.populationSize)} agents · ${res.periods} periods · seed ${res.seed}` },
@@ -443,6 +476,7 @@ export default function SimulationLab() {
     alloc,
     budgetCrore,
     configSignature,
+    confidenceRounds,
     durationMonths,
     engineKind,
     intensityPct,
@@ -493,7 +527,7 @@ export default function SimulationLab() {
    */
   const channelBreakdown = useMemo(() => {
     if (!result) return null;
-    const direct = POLICY_DIRECT_TARGETS[policyType] ?? [];
+    const direct = instrumentFor(policyType).directTargets;
     const groups = {
       direct: [] as { key: MetricKey; delta: number }[],
       spillover: [] as { key: MetricKey; delta: number }[],
@@ -582,6 +616,23 @@ export default function SimulationLab() {
               </Select>
             </div>
 
+            {/* The parameter set below is rendered per instrument from the
+                dictionary: allocation appears only where it genuinely applies. */}
+            <div className="space-y-1.5 rounded-md border bg-muted/20 p-2.5">
+              <p className="text-[11px] leading-snug text-muted-foreground">{instrument.summary}</p>
+              {instrument.newNodesRequired.length > 0 && (
+                <p className="text-[11px] leading-snug text-warning">
+                  Requires network nodes that did not exist before: {instrument.newNodesRequired.join(", ")}. Registered
+                  with documented priors and flagged as modelled assumptions in the provenance ledger.
+                </p>
+              )}
+              {instrument.declaredParameters.map((p) => (
+                <p key={p.key} className="text-[11px] leading-snug text-muted-foreground">
+                  • {p.label} — declared for the roadmap, not yet read by the engine.
+                </p>
+              ))}
+            </div>
+
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Intensity</Label>
@@ -614,43 +665,71 @@ export default function SimulationLab() {
               </p>
             </div>
 
-            <div className="space-y-2 rounded-md border bg-muted/30 p-3">
-              <p className="text-xs font-medium text-card-foreground">Allocation</p>
-              {(
-                [
-                  ["Housing", 0],
-                  ["Education", 1],
-                  ["Employment", 2],
-                ] as const
-              ).map(([label, index]) => (
-                <div key={label} className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] text-muted-foreground">{label}</span>
-                    <span className="text-[11px] font-medium text-card-foreground">
-                      {alloc[index][0]}% <span className="text-muted-foreground">→ {((alloc[index][0] / allocTotal) * 100).toFixed(0)}% of budget</span>
-                    </span>
-                  </div>
-                  <Slider
-                    value={alloc[index]}
-                    onValueChange={(v) =>
-                      setAlloc((prev) => {
-                        const next: [number[], number[], number[]] = [[...prev[0]], [...prev[1]], [...prev[2]]];
-                        next[index] = v;
-                        return next;
-                      })
-                    }
-                    min={5}
-                    max={90}
-                    step={5}
-                  />
-                </div>
-              ))}
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                The three shares are normalised to sum to 100% before the run, so the whole budget is always split
-                across these channels — there is no unallocated remainder. A 15 / 15 / 20 split becomes 30% / 30% /
-                40% of the budget.
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Confidence runs</Label>
+                <span className="text-xs font-medium text-card-foreground">{confidenceRounds[0]} seeds</span>
+              </div>
+              <Slider value={confidenceRounds} onValueChange={setConfidenceRounds} min={8} max={100} step={4} />
+              <p className="text-[11px] text-muted-foreground">
+                Full-population replays with different seeds, aggregated into the probability headline. More is more
+                stable and slower.
               </p>
             </div>
+
+            {usesAllocation ? (
+              <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                <p className="text-xs font-medium text-card-foreground">Allocation</p>
+                {(
+                  [
+                    ["Housing", 0],
+                    ["Education", 1],
+                    ["Employment", 2],
+                  ] as const
+                ).map(([label, index]) => (
+                  <div key={label} className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-muted-foreground">{label}</span>
+                      <span className="text-[11px] font-medium text-card-foreground">
+                        {alloc[index][0]}% <span className="text-muted-foreground">→ {((alloc[index][0] / allocTotal) * 100).toFixed(0)}% of budget</span>
+                      </span>
+                    </div>
+                    <Slider
+                      value={alloc[index]}
+                      onValueChange={(v) =>
+                        setAlloc((prev) => {
+                          const next: [number[], number[], number[]] = [[...prev[0]], [...prev[1]], [...prev[2]]];
+                          next[index] = v;
+                          return next;
+                        })
+                      }
+                      min={5}
+                      max={90}
+                      step={5}
+                    />
+                  </div>
+                ))}
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  The three shares are normalised to sum to 100% before the run, so the whole budget is always split
+                  across these channels — there is no unallocated remainder. A 15 / 15 / 20 split becomes 30% / 30% /
+                  40% of the budget.
+                </p>
+                {allocEqual && (
+                  <p className="text-[11px] leading-snug text-warning">
+                    All three sliders are equal, so this normalises to an uninformative 33% / 33% / 33% — only the ratio
+                    between the sliders matters, not their magnitude (90/90/90 is the same input as 5/5/5). Move at
+                    least one slider to commit more to a channel.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-md border bg-muted/30 p-3">
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  {instrument.label} has no housing / education / employment split, so no allocation sliders are shown.
+                  The engine uses this instrument's declared default allocation.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label className="text-xs">AI economic scenario</Label>
@@ -793,10 +872,65 @@ export default function SimulationLab() {
                     metricKey={key}
                     value={result.point[key]}
                     baseline={result.baseline[key]}
-                    interval={result.intervals[key]}
+                    uncertainty={result.uncertainty[key]}
                   />
                 ))}
               </div>
+
+              {/* vs previous-best-in-this-lineage (Part C3) — a different question
+                  from "vs no-policy": is this better than our last attempt at this
+                  kind of policy? Both comparisons are shown, not one instead of
+                  the other. */}
+              <Card className="animate-fade-up border-primary/20">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Lineage comparison · vs previous best in this lineage</CardTitle>
+                  <p className="text-xs text-muted-foreground">
+                    {describeLineageKey(result.lineageKey).instrument} ·{" "}
+                    {describeLineageKey(result.lineageKey).bands}. Compared against the best run previously recorded in
+                    THIS lineage. A healthcare run is never compared to — or allowed to inherit from — a regulation
+                    run.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  {lineageBest ? (
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-muted-foreground">
+                        Previous best: {lineageBest.policyName} · score {lineageBest.effectivenessScore.toFixed(1)}/100
+                        · {new Date(lineageBest.createdAt).toLocaleDateString()} · {lineageSize} run(s) in lineage
+                      </p>
+                      <div className="grid gap-1 sm:grid-cols-2">
+                        {([
+                          "gdpGrowthPct",
+                          "employmentRatePct",
+                          "meanIncome",
+                          "happinessIndex",
+                          "inflationPct",
+                          "gini",
+                          "protestRisk",
+                        ] as MetricKey[]).map((key) => {
+                          const prevDelta = lineageBest.headline[key] - lineageBest.baseline[key];
+                          const nowDelta = result.point[key] - result.baseline[key];
+                          const better = isBetter(key, nowDelta - prevDelta);
+                          return (
+                            <div key={key} className="flex items-center justify-between text-[11px]">
+                              <span className="text-muted-foreground">{METRIC_LABELS[key]}</span>
+                              <span className={better ? "text-success" : "text-destructive"}>
+                                {fmtDelta(key, nowDelta)} now vs {fmtDelta(key, prevDelta)} then
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {lineageSize === 0
+                        ? "No run from this lineage has been saved yet. Save runs to build the lineage — future searches then inherit from this lineage's own history rather than starting from scratch."
+                        : `This lineage has ${lineageSize} saved run(s) but none scored above this attempt's base yet.`}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
 
               <Tabs defaultValue="impact" className="animate-fade-up stagger-1">
                 <TabsList className="flex-wrap">

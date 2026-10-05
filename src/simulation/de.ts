@@ -29,6 +29,14 @@ export interface DeOptions {
   crossoverRate?: number;
   strategy?: "rand1bin" | "best1bin";
   seed: number;
+  /**
+   * A lineage's own history, encoded as vectors. When supplied, these seed the
+   * initial population (in order, best-first) and the remainder is filled by
+   * Latin-hypercube sampling. Because the mutation base and the two difference
+   * vectors are drawn from the current population, inheritance stays inside the
+   * lineage's pool rather than a shared cross-instrument gene pool.
+   */
+  initialPopulation?: number[][];
   /** Stop early after this many generations without improvement. */
   stagnationLimit?: number;
   maxEvaluations?: number;
@@ -186,6 +194,12 @@ export function differentialEvolution(
   const np = Math.max(8, populationSize);
 
   let population = latinHypercube(bounds, np, rng);
+  if (options.initialPopulation && options.initialPopulation.length > 0) {
+    const injected = options.initialPopulation
+      .slice(0, np)
+      .map((v) => clipToBounds(v, bounds));
+    population = injected.concat(population.slice(injected.length));
+  }
   let evaluated = 0;
   const objectiveCache = new Map<string, number[]>();
 

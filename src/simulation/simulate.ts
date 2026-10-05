@@ -26,6 +26,7 @@
 
 import {
   AccountingViolationError,
+  LOWER_IS_BETTER,
   aggregateBands,
   assertIdentities,
   checkIdentities,
@@ -36,6 +37,8 @@ import {
   zoneGdpLevel,
   zoneMetrics,
 } from "./aggregate";
+import { allocationFor } from "./instruments";
+import { lineageKeyFor } from "./lineage";
 import type { AggregateBands, PeriodLevels } from "./aggregate";
 import { CHANNEL_LAGS_MONTHS } from "./census";
 import {
@@ -45,6 +48,7 @@ import {
   buildBn,
   causalAttribution,
   compileBn,
+  extensionRngFor,
   sampleMicro,
   sampleTownAndFeedback,
   validateBnDirection,
@@ -89,6 +93,11 @@ export interface SimulationOptions {
   skipSearch?: boolean;
   /** Rounds used to build the random-seed variation range (each is a full-sample trajectory). */
   intervalRounds?: number;
+  /**
+   * Encoded policy vectors from THIS run's lineage, best-first. They seed the
+   * evolutionary search so inheritance stays inside the lineage (Part C).
+   */
+  lineageSeeds?: number[][];
 }
 
 export const DEFAULT_SCENARIO: ScenarioLevers = {
@@ -149,13 +158,17 @@ export function encodePolicy(p: PolicyVector): number[] {
 export function decodeVector(v: number[], type: PolicyVector["type"], name: string): PolicyVector {
   const alloc = [v[3], v[4], v[5]];
   const sum = alloc.reduce((a, b) => a + b, 0) || 1;
+  const normalised = { housing: alloc[0] / sum, education: alloc[1] / sum, employment: alloc[2] / sum };
   return {
     type,
     name,
     intensity: clamp01(v[0]),
     budget: clamp(v[1], 2_000_000, REFERENCE_BUDGET),
     durationMonths: clamp(Math.round(v[2] / 3) * 3, 3, 60),
-    allocation: { housing: alloc[0] / sum, education: alloc[1] / sum, employment: alloc[2] / sum },
+    // The three-way split only applies to instruments that use it; for tax /
+    // regulation / healthcare the dictionary's declared default is used, so the
+    // allocation genes are ignored rather than silently pretending to matter.
+    allocation: allocationFor(type, normalised),
   };
 }
 
@@ -256,6 +269,9 @@ function* trajectoryGenerator(
   onPeriod?: (fraction: number) => void,
 ): Generator<DecisionRequest, TrajectoryOutcome, DecisionResponse> {
   const states = new Int32Array(c.ids.length);
+  // Isolated stream for nodes registered after the original network, so adding
+  // one never perturbs the established simulation's uniforms.
+  const extRng = extensionRngFor(rng.seed);
   const agents = spec.agents ?? Int32Array.from({ length: pop.size }, (_, i) => i);
   const active0 = agents.length;
 
@@ -313,7 +329,7 @@ function* trajectoryGenerator(
       // Validate the evidence construction once per run: sampling is only exact
       // when conditioning happens on fully-fixed ancestry.
       if (p === 0 && a === 0) assertEvidenceIsUpstream(c, fixed);
-      sampleMicro(c, states, fixed, rng);
+      sampleMicro(c, states, fixed, rng, extRng);
 
       const sampledIncomeClass = states[c.index.IncomeClass];
       const sampledEmp = states[c.index.EmploymentStatus];
@@ -869,6 +885,9 @@ export async function runSimulation(
       populationSize: dePop,
       generations: deGens,
       seed: request.seed ^ 0x5e7c,
+      // Part C: seed the pool with this lineage's own history (best-first), so
+      // crossover/mutation inherit within the lineage, not across instruments.
+      initialPopulation: options.lineageSeeds,
       stagnationLimit: 12,
       maxEvaluations: (dePop + 1) * deGens,
       onGeneration: (point, front) => {
@@ -951,15 +970,65 @@ export async function runSimulation(
     for (const key of Object.keys(m) as MetricKey[]) samples.get(key)?.push(m[key]);
   }
 
+  // The reported point estimate is one of the samples (it is the seed the user
+  // chose), so its empirical quantiles always bracket it — this is why the old
+  // "widen the band on any seed whose quantiles exclude the point" hack could
+  // be removed rather than kept.
   const intervals = Object.fromEntries(
-    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
-      const band = intervalFor(samples.get(k) ?? []);
-      const point = treatedMetrics[k];
-      // The reported point estimate must lie inside its own seed-variation range;
-      // widen the band on any seed whose Monte-Carlo quantiles exclude it.
-      return [k, { p05: Math.min(band.p05, point), p50: band.p50, p95: Math.max(band.p95, point) }];
-    }),
+    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => [k, intervalFor(samples.get(k) ?? [])]),
   ) as SimulationResult["intervals"];
+
+  // The DISPLAYED headline is the ensemble median, not one arbitrary seed's
+  // value. This is what resolves the "point estimate outside its own displayed
+  // 90% interval" bug: a median is bracketed by the 5th and 95th percentiles by
+  // construction, for any number of seeds. The seed remains the reproducibility
+  // mechanism — the chosen-seed trajectory is still reported in `trajectories`.
+  const headlineMetrics = Object.fromEntries(
+    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
+      const arr = Float64Array.from(samples.get(k) ?? []).sort();
+      const n = arr.length;
+      if (n === 0) return [k, treatedMetrics[k]];
+      const pos = 0.5 * (n - 1);
+      const lo = Math.floor(pos);
+      const hi = Math.ceil(pos);
+      const median = lo === hi ? arr[lo] : arr[lo] + (arr[hi] - arr[lo]) * (pos - lo);
+      return [k, median];
+    }),
+  ) as Record<MetricKey, number>;
+
+  /* 5b. Uncertainty: a probability-style headline over the seed ensemble. */
+  const uncertainty = Object.fromEntries(
+    (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
+      const deltas = samples.get(k)!.map((v) => v - baselineMetrics[k]);
+      const lowerIsBetter = LOWER_IS_BETTER.includes(k);
+      const material = Math.max(1e-9, Math.abs(baselineMetrics[k]) * 1e-4);
+      let improved = 0;
+      let changed = 0;
+      for (const d of deltas) {
+        if (lowerIsBetter ? d < -material : d > material) improved += 1;
+        if (Math.abs(d) > material) changed += 1;
+      }
+      const sorted = Float64Array.from(deltas).sort();
+      const q = (f: number) => {
+        if (sorted.length === 0) return 0;
+        const pos = clamp(f, 0, 1) * (sorted.length - 1);
+        const lo = Math.floor(pos);
+        const hi = Math.ceil(pos);
+        return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+      };
+      return [
+        k,
+        {
+          seedCount: deltas.length,
+          probabilityImproved: deltas.length > 0 ? improved / deltas.length : 0,
+          probabilityChanged: deltas.length > 0 ? changed / deltas.length : 0,
+          medianDelta: q(0.5),
+          p05Delta: q(0.05),
+          p95Delta: q(0.95),
+        },
+      ];
+    }),
+  ) as SimulationResult["uncertainty"];
 
   /* 6. Zone incidence — the payoff of a spatially resolved agent population */
   onProgress({ phase: "Computing zone incidence", fraction: 0.93 });
@@ -1069,8 +1138,10 @@ export async function runSimulation(
     populationManifest: base.manifest,
     populationSize: base.size,
     periods,
-    point: treatedMetrics,
+    point: headlineMetrics,
     intervals,
+    uncertainty,
+    lineageKey: lineageKeyFor(request.policy),
     byZone,
     baseline: baselineMetrics,
     trajectories,

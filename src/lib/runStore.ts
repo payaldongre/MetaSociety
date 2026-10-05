@@ -20,6 +20,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
+import { lineageKeyFor, type LineageRecord } from "@/simulation/lineage";
 import type { MetricKey, PolicyVector, SimulationResult } from "@/simulation/types";
 
 const STORAGE_KEY = "meta_society_simulations";
@@ -36,8 +37,30 @@ export interface SavedRun {
   headline: Record<MetricKey, number>;
   baseline: Record<MetricKey, number>;
   alerts: SimulationResult["alerts"];
+  /** The full policy vector, so a lineage's history can seed the search (Part C). */
+  policy: PolicyVector;
+  /** Instrument + parameter-similarity bucket the run belongs to. */
+  lineageKey: string;
   result: SimulationResult;
   syncedToSupabase: boolean;
+}
+
+/**
+ * This workspace's recorded runs as lineage records, ready to group by lineage.
+ * The persistent history is the local store plus, where configured, the
+ * `simulations` table; both carry the same full policy vector and lineage key.
+ */
+export function lineageRecords(): LineageRecord[] {
+  return listRuns()
+    // Runs saved before Part C have no stored policy vector; they cannot seed a
+    // lineage, so they are skipped rather than mis-grouped.
+    .filter((run) => Boolean(run.policy))
+    .map((run) => ({
+      lineageKey: run.lineageKey ?? lineageKeyFor(run.policy),
+      policy: run.policy,
+      effectivenessScore: run.effectivenessScore,
+      createdAt: run.createdAt,
+    }));
 }
 
 export interface SaveOutcome {
@@ -162,16 +185,33 @@ async function persistToSupabase(run: SavedRun, userId: string): Promise<string 
       user_id: userId,
       policy_name: run.policyName,
       policy_type: run.policyType,
-      parameters: { policy: run.policyType, runId: run.runId, seed: run.result.seed } as never,
+      parameters: {
+        // The FULL policy vector + lineage key, so history accumulates across
+        // sessions and users and the search can seed from a lineage's own past.
+        policy: run.policy,
+        lineageKey: run.lineageKey,
+        vector: [
+          run.policy.intensity,
+          run.policy.budget,
+          run.policy.durationMonths,
+          run.policy.allocation.housing,
+          run.policy.allocation.education,
+          run.policy.allocation.employment,
+        ],
+        runId: run.runId,
+        seed: run.result.seed,
+      } as never,
       // A compact summary is stored, not the whole result object: the metrics,
-      // baseline and alerts are what a report needs, and the full result is
-      // exportable from the Lab as JSON.
+      // baseline, uncertainty and alerts are what a report needs, and the full
+      // result is exportable from the Lab as JSON.
       results: {
         headline: run.headline,
         baseline: run.baseline,
+        uncertainty: run.result.uncertainty,
         alerts: run.alerts,
         effectivenessScore: run.effectivenessScore,
         engine: run.result.engine,
+        lineageKey: run.lineageKey,
       } as never,
       effectiveness_score: run.effectivenessScore,
     });
@@ -200,6 +240,8 @@ export async function saveRun(
     headline: result.point,
     baseline: result.baseline,
     alerts: result.alerts,
+    policy,
+    lineageKey: result.lineageKey ?? lineageKeyFor(policy),
     result,
     syncedToSupabase: false,
   };

@@ -42,7 +42,7 @@ import {
 } from "./types";
 import type { Bn, BnNode, CausalFactor, Cpt, PolicyType, Population, ValidationCheck } from "./types";
 
-export const BN_VERSION = "1.0.0";
+export const BN_VERSION = "1.1.0";
 export const TRUST_BANDS = ["low", "medium", "high"] as const;
 export const DEMAND_BANDS = ["weak", "normal", "strong"] as const;
 export const EMPLOYMENT_AGG = ["low", "normal", "high"] as const;
@@ -77,6 +77,10 @@ export const DOMAINS: Record<string, string[]> = {
   HouseholdStress: ["low", "medium", "high"],
   SectorOfWork: [...SECTORS],
   AgentSectorOutput: ["declining", "stable", "rising"],
+
+  /* --- healthcare channel (pass 1) — NEW, see NODE_REGISTRY --- */
+  HealthInsurance: ["uninsured", "covered"],
+  HealthBurden: ["low", "medium", "high"],
 
   /* --- town outcomes (pass 2) --- */
   Inflation: ["low", "moderate", "high"],
@@ -116,6 +120,9 @@ const PARENTS: Record<string, string[]> = {
   SectorOfWork: ["SectorDemand", "EducationLevel", "IncomeClass", "SkillRelevance"],
   AgentSectorOutput: ["SectorDemand", "EmploymentStatus", "SkillRelevance"],
 
+  HealthInsurance: ["IncomeClass", "EmploymentStatus"],
+  HealthBurden: ["HealthInsurance", "IncomeClass", "SpendingCapacity"],
+
   Inflation: ["AggregateDemand", "PolicyBudgetShare", "PolicyType"],
   EmploymentRateBand: ["EmploymentAggregate", "MigrationAggregate"],
   TownGDPGrowthBand: ["AggregateSectorOutput", "EmploymentRateBand", "Inflation"],
@@ -147,16 +154,139 @@ const POLICY_SHIFT_DIMS: Record<string, string[]> = {
   Inflation: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
   PublicSentiment: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
   ProtestRiskBand: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  HealthInsurance: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
+  HealthBurden: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
 };
 
-/** Effective policy configuration for a table row, incl. the shift's dimensions. */
-function policyParentsFor(id: string): string[] {
-  const declared = PARENTS[id] ?? [];
-  const extra = (POLICY_SHIFT_DIMS[id] ?? []).filter((p) => !declared.includes(p));
-  return [...declared, ...extra];
+/**
+ * The scheduling pass each node belongs to. The three-pass scheduler walks the
+ * registry by this field instead of calling hardcoded named functions.
+ *
+ *   micro    roots + per-agent outcomes      (pass 1)
+ *   town     aggregate-band outcomes         (pass 2)
+ *   feedback per-agent sentiment / protest / migration given the town (pass 3)
+ */
+const NODE_PASS: Record<string, "micro" | "town" | "feedback"> = {
+  /* roots and per-agent outcomes */
+  PolicyType: "micro",
+  PolicyIntensity: "micro",
+  PolicyBudgetShare: "micro",
+  PolicyDuration: "micro",
+  IncomeClassPrior: "micro",
+  AgeBand: "micro",
+  EducationLevel: "micro",
+  HousingQuality: "micro",
+  TrustInGov: "micro",
+  ScenarioExposure: "micro",
+  SectorDemand: "micro",
+  IncomeClass: "micro",
+  SkillRelevance: "micro",
+  EmploymentStatus: "micro",
+  SpendingCapacity: "micro",
+  HouseholdStress: "micro",
+  SectorOfWork: "micro",
+  AgentSectorOutput: "micro",
+  HealthInsurance: "micro",
+  HealthBurden: "micro",
+  /* town */
+  Inflation: "town",
+  EmploymentRateBand: "town",
+  TownGDPGrowthBand: "town",
+  WageLevelBand: "town",
+  /* feedback */
+  PublicSentiment: "feedback",
+  MigrationIntentBand: "feedback",
+  ProtestRiskBand: "feedback",
+};
+
+/**
+ * Where a node's conditional probability comes from.
+ *
+ *   observed  counted from the population data (with Laplace smoothing)
+ *   prior     a documented prior, because the variable is not observably
+ *   derived   an aggregate band set deterministically by the aggregation step
+ *
+ * Every `prior` entry is a MODELLED ASSUMPTION and is flagged as such in the
+ * provenance ledger, exactly like the existing `modelled` fields.
+ */
+const NODE_CPT_SOURCE: Record<string, "observed" | "prior" | "derived"> = {
+  PolicyType: "prior",
+  PolicyIntensity: "prior",
+  PolicyBudgetShare: "prior",
+  PolicyDuration: "prior",
+  ScenarioExposure: "prior",
+  IncomeClassPrior: "observed",
+  AgeBand: "observed",
+  EducationLevel: "observed",
+  HousingQuality: "observed",
+  TrustInGov: "observed",
+  SectorDemand: "prior",
+  IncomeClass: "observed",
+  SkillRelevance: "observed",
+  EmploymentStatus: "observed",
+  SpendingCapacity: "observed",
+  HouseholdStress: "observed",
+  SectorOfWork: "observed",
+  AgentSectorOutput: "observed",
+  HealthInsurance: "observed",
+  HealthBurden: "observed",
+  AggregateDemand: "derived",
+  AggregateSectorOutput: "derived",
+  EmploymentAggregate: "derived",
+  MigrationAggregate: "derived",
+  Inflation: "prior",
+  EmploymentRateBand: "prior",
+  TownGDPGrowthBand: "prior",
+  WageLevelBand: "prior",
+  PublicSentiment: "observed",
+  MigrationIntentBand: "observed",
+  ProtestRiskBand: "observed",
+};
+
+/**
+ * The declarative node registry: the single source the three-pass scheduler
+ * walks. Adding a node is a data change here (plus, where it is unobservable, a
+ * documented prior), not a hand-edit of the engine's named functions.
+ */
+export interface NodeSpec {
+  id: string;
+  domain: string[];
+  parents: string[];
+  pass: "micro" | "town" | "feedback";
+  /** No parents: drawn before the micro pass. */
+  root: boolean;
+  cptSource: "observed" | "prior" | "derived";
+  /** True when the conditional structure is a flagged modelling assumption. */
+  modelled: boolean;
+  /** Registered after the original network; scheduled from an isolated stream. */
+  extension: boolean;
 }
 
-export const MICRO_NODES = [
+/**
+ * Nodes whose conditional structure is a MODELLED ASSUMPTION rather than a
+ * measured relationship. HealthBurden is derived from coverage + income + a
+ * savings proxy, the same way HouseholdStress is derived, and is flagged here so
+ * it is never presented as measured.
+ */
+const MODELLED_NODES = new Set<string>(["HealthBurden"]);
+
+/**
+ * Nodes registered after the original 29-node network.
+ *
+ * They are scheduled from an ISOLATED random stream (see `samplePass`) so that
+ * adding a node can never silently rewrite the established simulation: the
+ * pre-existing nodes keep drawing the exact uniforms they always did, and a new
+ * node's conditional structure can be reviewed without perturbing history.
+ */
+const EXTENSION_NODES = new Set<string>(["HealthInsurance", "HealthBurden"]);
+
+/**
+ * Explicit scheduling order. The micro order is the ORIGINAL order the engine
+ * used, so established results are preserved; newly registered nodes are
+ * appended at the end and drawn from the isolated stream. Town and feedback
+ * orders match the original lists.
+ */
+const MICRO_SCHEDULE_ORDER = [
   "SectorDemand",
   "SkillRelevance",
   "IncomeClass",
@@ -165,16 +295,52 @@ export const MICRO_NODES = [
   "HouseholdStress",
   "SectorOfWork",
   "AgentSectorOutput",
-] as const;
+  "HealthInsurance",
+  "HealthBurden",
+];
 
-export const TOWN_NODES = ["Inflation", "EmploymentRateBand", "TownGDPGrowthBand", "WageLevelBand"] as const;
+const PASS_SCHEDULE: Record<"micro" | "town" | "feedback", string[]> = {
+  micro: MICRO_SCHEDULE_ORDER,
+  town: ["Inflation", "EmploymentRateBand", "TownGDPGrowthBand", "WageLevelBand"],
+  feedback: ["PublicSentiment", "MigrationIntentBand", "ProtestRiskBand"],
+};
 
-export const FEEDBACK_NODES = ["PublicSentiment", "MigrationIntentBand", "ProtestRiskBand"] as const;
+export const NODE_REGISTRY: NodeSpec[] = Object.keys(DOMAINS).map((id) => {
+  const parents = policyParentsFor(id);
+  return {
+    id,
+    domain: DOMAINS[id],
+    parents,
+    pass: NODE_PASS[id] ?? "micro",
+    root: parents.length === 0,
+    cptSource: NODE_CPT_SOURCE[id] ?? "prior",
+    modelled: MODELLED_NODES.has(id),
+    extension: EXTENSION_NODES.has(id),
+  };
+});
+
+/** Effective policy configuration for a table row, incl. the shift's dimensions. */
+function policyParentsFor(id: string): string[] {
+  const declared = PARENTS[id] ?? [];
+  const extra = (POLICY_SHIFT_DIMS[id] ?? []).filter((p) => !declared.includes(p));
+  return [...declared, ...extra];
+}
+
+/**
+ * The three scheduling lists are DERIVED from the registry, so a node cannot
+ * drift out of the scheduler by being added to one list and not another.
+ * Roots are sampled before the micro pass (see `samplePass`).
+ */
+export const MICRO_NODES = MICRO_SCHEDULE_ORDER.filter((id) => !EXTENSION_NODES.has(id));
+
+export const TOWN_NODES = NODE_REGISTRY.filter((n) => n.pass === "town").map((n) => n.id);
+
+export const FEEDBACK_NODES = NODE_REGISTRY.filter((n) => n.pass === "feedback").map((n) => n.id);
 
 export const AGGREGATE_NODES = ["AggregateDemand", "AggregateSectorOutput", "EmploymentAggregate", "MigrationAggregate"];
 
 /** Nodes with no parents: policy parameters and agent attributes. */
-export const ROOT_NODE_IDS = Object.keys(DOMAINS).filter((id) => (PARENTS[id] ?? []).length === 0);
+export const ROOT_NODE_IDS = NODE_REGISTRY.filter((n) => n.root).map((n) => n.id);
 
 /**
  * Documented additive log-weight shifts applied on top of the learned base
@@ -302,6 +468,8 @@ export const DOMAIN_LEGENDS: Record<string, string> = {
   PublicSentiment: SENTIMENTS.join(" | "),
   MigrationIntentBand: "stay | consider | leave",
   ProtestRiskBand: "low | medium | high",
+  HealthInsurance: "uninsured | covered",
+  HealthBurden: "low | medium | high",
 };
 
 /**
@@ -346,6 +514,10 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
           return [0, 0, 0.05 * s, 0.1 * s, 0.12 * s, 0.1 * s];
         case "housing":
           return [0.3 * s, 0.2 * s, 0, -0.15 * s, -0.2 * s, -0.2 * s];
+        case "health":
+          // Financial protection: coverage shields the bottom of the distribution
+          // from medical-cost shocks. Distinct magnitudes from `subsidy`.
+          return [0.25 * s, 0.18 * s, 0, -0.08 * s, -0.15 * s, -0.15 * s];
         default:
           return null;
       }
@@ -363,6 +535,9 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
           return [0.35 * s, 0.5 * s, -0.5 * s];
         case "housing":
           return [-0.3 * s, -0.1 * s, 0.2 * s];
+        case "health":
+          // Health shocks keep workers out of work; coverage supports formal work.
+          return [-0.25 * s, -0.08 * s, 0.3 * s];
         default:
           return null;
       }
@@ -374,6 +549,10 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
           return [0.75 * s, 0, -0.4 * s];
         case "housing":
           return [-0.35 * s, 0, 0.3 * s];
+        case "health":
+          // Out-of-pocket medical cost is a spending-capacity shock; coverage
+          // relieves it. A distinct channel from subsidies.
+          return [-0.55 * s, 0, 0.55 * s];
         default:
           return null;
       }
@@ -402,6 +581,9 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
           return [0.5 * s, 0, -0.45 * s];
         case "regulation":
           return [0.4 * s, 0, -0.3 * s];
+        case "health":
+          // Visible coverage is experienced sentiment, not a transfer.
+          return [-0.35 * s, 0, 0.5 * s];
         default:
           return null;
       }
@@ -413,6 +595,29 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
         case "subsidy":
         case "housing":
           return [0.5 * s, 0, -0.45 * s];
+        case "health":
+          return [0.45 * s, 0, -0.42 * s];
+        default:
+          return null;
+      }
+    /*
+     * Healthcare / insurance — a GENUINELY NEW channel. It deliberately does
+     * NOT fall through to the generic subsidy shift on SectorDemand /
+     * IncomeClass / EmploymentStatus (that was the bug: a run labelled
+     * "Health insurance" produced a pure intensity-scaled subsidy response). A
+     * health policy moves coverage and burden only.
+     */
+    case "HealthInsurance":
+      switch (type) {
+        case "health":
+          return [-0.6 * s, 0.85 * s]; // favour "covered"
+        default:
+          return null;
+      }
+    case "HealthBurden":
+      switch (type) {
+        case "health":
+          return [0.7 * s, 0, -0.85 * s]; // favour "low"
         default:
           return null;
       }
@@ -452,6 +657,18 @@ export function observedStateFor(pop: Population, i: number, nodeId: string): nu
       const jobless = pop.employmentStatus[i] === 0;
       const poorHousing = pop.housing[i] === 0;
       const score = (poor ? 1 : 0) + (jobless ? 1 : 0) + (poorHousing ? 1 : 0);
+      return score >= 2 ? 2 : score === 1 ? 1 : 0;
+    }
+    case "HealthInsurance":
+      return pop.healthInsurance[i] === 1 ? 1 : 0;
+    case "HealthBurden": {
+      // MODELLED ASSUMPTION (ledger: modelled). Out-of-pocket burden derived
+      // from coverage, income class and the savings stock — the same derivation
+      // style as HouseholdStress, and flagged rather than presented as measured.
+      const covered = pop.healthInsurance[i] === 1;
+      const poor = pop.incomeClass[i] <= 1;
+      const fragile = pop.savingsMonths[i] < 1.5;
+      const score = (covered ? 0 : 1) + (poor ? 1 : 0) + (fragile ? 1 : 0);
       return score >= 2 ? 2 : score === 1 ? 1 : 0;
     }
     case "SectorOfWork":
@@ -789,14 +1006,60 @@ export function sampleRoots(c: CompiledBn, states: Int32Array, fixed: Uint8Array
   }
 }
 
-export function sampleMicro(c: CompiledBn, states: Int32Array, fixed: Uint8Array, rng: Rng): void {
-  sampleRoots(c, states, fixed, rng);
-  sampleNodes(c, states, fixed, MICRO_NODES, rng);
+/**
+ * Generic pass scheduler. Walks NODE_REGISTRY and draws every node in the
+ * requested pass, in registry order. The micro pass samples roots first, since
+ * a root has no parents and is the evidence for everything downstream.
+ *
+ * This replaces the three hardcoded named functions: a node added to the
+ * registry with `pass: "micro"` is scheduled automatically, provided its
+ * parents appear earlier in the registry.
+ */
+export function samplePass(
+  c: CompiledBn,
+  states: Int32Array,
+  fixed: Uint8Array,
+  pass: "micro" | "town" | "feedback",
+  rng: Rng,
+  extensionRng?: Rng,
+): void {
+  if (pass === "micro") sampleRoots(c, states, fixed, rng);
+  for (const id of PASS_SCHEDULE[pass]) {
+    const spec = c.bn.nodes[id];
+    if (!spec || spec.parents.length === 0) continue; // roots handled above
+    const idx = c.index[id];
+    if (idx === undefined || fixed[idx]) continue;
+    // Extension nodes draw from the isolated stream when one is supplied, so
+    // the established nodes' uniforms are never shifted by adding a node.
+    const isExtension = EXTENSION_NODES.has(id);
+    if (isExtension && !extensionRng) continue;
+    const draw = isExtension ? extensionRng!.next() : rng.next();
+    states[idx] = drawNode(c, idx, states, draw);
+  }
+}
+
+/**
+ * Sample the micro pass. `extensionRng`, when supplied, feeds the nodes added
+ * after the original network so they do not perturb the established stream.
+ */
+export function sampleMicro(
+  c: CompiledBn,
+  states: Int32Array,
+  fixed: Uint8Array,
+  rng: Rng,
+  extensionRng?: Rng,
+): void {
+  samplePass(c, states, fixed, "micro", rng, extensionRng);
+}
+
+/** A deterministic secondary stream for the extension nodes, from a run's seed. */
+export function extensionRngFor(seed: number): Rng {
+  return createRng((seed ^ 0x9e3779b1) >>> 0);
 }
 
 export function sampleTownAndFeedback(c: CompiledBn, states: Int32Array, fixed: Uint8Array, rng: Rng): void {
-  sampleNodes(c, states, fixed, TOWN_NODES, rng);
-  sampleNodes(c, states, fixed, FEEDBACK_NODES, rng);
+  samplePass(c, states, fixed, "town", rng);
+  samplePass(c, states, fixed, "feedback", rng);
 }
 
 /** Marginal distribution of a node given evidence, by ancestral sampling. */
@@ -811,10 +1074,11 @@ export function posteriorDistribution(
   const idx = c.index[nodeId];
   const counts = new Array(c.domainSize[idx]).fill(0);
   const states = scratch ?? new Int32Array(c.ids.length);
+  const extRng = extensionRngFor(rng.seed);
   for (let k = 0; k < n; k += 1) {
     states.fill(0);
     const fixed = applyEvidence(c, states, evidence);
-    sampleMicro(c, states, fixed, rng);
+    sampleMicro(c, states, fixed, rng, extRng);
     sampleTownAndFeedback(c, states, fixed, rng);
     counts[states[idx]] += 1;
   }
@@ -839,11 +1103,12 @@ export function causalAttribution(
   const joint = candidates.map(() => new Float64Array(2 * targetN));
   const tCounts = new Float64Array(targetN);
   const states = new Int32Array(c.ids.length);
+  const extRng = extensionRngFor(rng.seed);
 
   for (let k = 0; k < n; k += 1) {
     states.fill(0);
     const fixed = applyEvidence(c, states, evidence);
-    sampleMicro(c, states, fixed, rng);
+    sampleMicro(c, states, fixed, rng, extRng);
     sampleTownAndFeedback(c, states, fixed, rng);
     const t = states[tIdx];
     tCounts[t] += 1;
@@ -961,6 +1226,7 @@ export function policyResponse(
 ): number {
   const idx = c.index[target];
   const states = new Int32Array(c.ids.length);
+  const extRng = extensionRngFor(rng.seed);
   let hits = 0;
   for (let k = 0; k < n; k += 1) {
     states.fill(0);
@@ -972,7 +1238,7 @@ export function policyResponse(
       ...randomAgentEvidence(pop, rng.int(pop.size), extraEvidence),
     };
     const fixed = applyEvidence(c, states, evidence);
-    sampleMicro(c, states, fixed, rng);
+    sampleMicro(c, states, fixed, rng, extRng);
     sampleTownAndFeedback(c, states, fixed, rng);
     if (targetStates.includes(states[idx])) hits += 1;
   }

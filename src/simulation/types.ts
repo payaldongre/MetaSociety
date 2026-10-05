@@ -60,7 +60,16 @@ export type QualityLevel = (typeof QUALITY_LEVELS)[number];
 export const SENTIMENTS = ["negative", "neutral", "positive"] as const;
 export type Sentiment = (typeof SENTIMENTS)[number];
 
-export const POLICY_TYPES = ["none", "tax", "subsidy", "regulation", "housing", "labor", "education"] as const;
+export const POLICY_TYPES = [
+  "none",
+  "tax",
+  "subsidy",
+  "regulation",
+  "housing",
+  "labor",
+  "education",
+  "health",
+] as const;
 export type PolicyType = (typeof POLICY_TYPES)[number];
 
 /** How a given field was obtained. Rendered in the UI's provenance panel. */
@@ -308,6 +317,25 @@ export interface Interval {
   p95: number;
 }
 
+/**
+ * Aggregated uncertainty for one metric across many random seeds (SPEC §6.8).
+ *
+ * The seed stays the reproducibility mechanism; what changes is what is
+ * DISPLAYED. Instead of one arbitrary seed's point value plus a separate range,
+ * a run reports a probability-style headline over the seed ensemble.
+ */
+export interface MetricUncertainty {
+  seedCount: number;
+  /** Share of seeds on which this metric improves against the no-policy baseline. */
+  probabilityImproved: number;
+  /** Share of seeds on which the metric moves materially in either direction. */
+  probabilityChanged: number;
+  /** Median effect (simulated minus baseline) over the seed ensemble. */
+  medianDelta: number;
+  p05Delta: number;
+  p95Delta: number;
+}
+
 export interface PeriodResult {
   period: number;
   month: number;
@@ -365,6 +393,10 @@ export interface SimulationResult {
 
   point: Record<MetricKey, number>;
   intervals: Record<MetricKey, Interval>;
+  /** Probability-style headline aggregated over the random-seed ensemble. */
+  uncertainty: Record<MetricKey, MetricUncertainty>;
+  /** Lineage this run belongs to (instrument + parameter-similarity bucket). */
+  lineageKey: string;
   byZone: Record<Zone, { population: number; metrics: Record<MetricKey, Interval> }>;
   baseline: Record<MetricKey, number>;
 
