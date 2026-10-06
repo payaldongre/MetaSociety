@@ -13,7 +13,6 @@
 import { describe, expect, it } from "vitest";
 import {
   BN_VERSION,
-  SCENARIO_PRESETS,
   buildBn,
   causalAttribution,
   checkIdentities,
@@ -44,7 +43,7 @@ import {
 const POP = getPopulation();
 
 const policy = (overrides: Partial<PolicyVector> = {}): PolicyVector => ({
-  type: "subsidy",
+  channelIds: ["INCOME_SUPPORT"],
   name: "Youth Employment Stimulus",
   intensity: 0.8,
   budget: 120_000_000,
@@ -153,7 +152,6 @@ describe("Bayesian network", () => {
       EducationLevel: "secondary",
       HousingQuality: "adequate",
       TrustInGov: "medium",
-      ScenarioExposure: "medium",
     } as const;
 
     // Observational query: P(SectorDemand | PolicyType = none).
@@ -188,7 +186,6 @@ describe("Bayesian network", () => {
       EducationLevel: "secondary",
       HousingQuality: "adequate",
       TrustInGov: "medium",
-      ScenarioExposure: "medium",
     });
     void fixed;
     const factors = causalAttribution(c, "EmploymentStatus", {
@@ -201,7 +198,6 @@ describe("Bayesian network", () => {
       EducationLevel: "secondary",
       HousingQuality: "adequate",
       TrustInGov: "medium",
-      ScenarioExposure: "medium",
     }, 300, createRng(9));
     expect(factors.length).toBeGreaterThan(3);
     expect(factors[0].influence).toBeGreaterThan(0);
@@ -450,6 +446,32 @@ describe("end-to-end simulation", () => {
   );
 
   it(
+    "reports an aggregated probability headline whose 90% band brackets its own single-seed point",
+    async () => {
+      // Regression for the reported bug where one arbitrary seed's point value
+      // fell OUTSIDE its own displayed 90% interval. The headline is now an
+      // ensemble over the internal rounds, so the point estimate (which is one
+      // member of that ensemble) must always sit inside the reported band.
+      const result = await runSimulation(request(), { searchAgents: 100, intervalRounds: 2 });
+      for (const key of Object.keys(result.point) as (keyof typeof result.point)[]) {
+        const u = result.uncertainty[key];
+        // A real distribution over the ensemble, not a single seed's value
+        // presented as a probability.
+        expect(u.seedCount).toBeGreaterThan(1);
+        expect(u.probabilityImproved).toBeGreaterThanOrEqual(0);
+        expect(u.probabilityImproved).toBeLessThanOrEqual(1);
+        expect(u.p05Delta).toBeLessThanOrEqual(u.medianDelta + 1e-9);
+        expect(u.medianDelta).toBeLessThanOrEqual(u.p95Delta + 1e-9);
+        // The headline's own single-seed point must be bracketed by the 90% band.
+        const pointDelta = result.point[key] - result.baseline[key];
+        expect(u.p05Delta).toBeLessThanOrEqual(pointDelta + 1e-9);
+        expect(pointDelta).toBeLessThanOrEqual(u.p95Delta + 1e-9);
+      }
+    },
+    240_000,
+  );
+
+  it(
     "runs the evolutionary search and reports a verified Pareto front",
     async () => {
       const result = await runSimulation(request({ mode: "optimize" }), {
@@ -483,28 +505,32 @@ describe("end-to-end simulation", () => {
   it(
     "completes on the Simulation Lab's own default configuration",
     async () => {
-      // Exactly what the page sends when a user presses "Run simulation" without
-      // touching anything: subsidy, 65% intensity, ₹12 crore, 24 months, a 30/40/30
-      // allocation and the Substantial scenario preset. If this configuration
+      // Exactly the policy configuration the page sends when a user presses
+      // "Run simulation" without touching anything: subsidy, 65% intensity,
+      // ₹12 crore, 24 months and a 30/40/30 allocation. If this configuration
       // ever stops completing, the Lab is broken regardless of what the lower
       // level tests say.
+      //
+      // The uncertainty ensemble is capped at one round here. The engine's real
+      // internal count is CONFIDENCE_ROUNDS (12), asserted separately in
+      // spec-dod; 12 full-population rounds in one test blocks the vitest worker
+      // past its RPC budget, and the ensemble is not what this test asserts.
       const allocTotal = 30 + 40 + 30;
       const result = await runSimulation({
         townId: POP.townId,
         policy: {
-          type: "subsidy",
+          channelIds: ["INCOME_SUPPORT"],
           name: "Pilgrimage-corridor employment subsidy",
           intensity: 0.65,
           budget: 12 * 1e7,
           durationMonths: 24,
           allocation: { housing: 30 / allocTotal, education: 40 / allocTotal, employment: 30 / allocTotal },
         },
-        scenario: SCENARIO_PRESETS.substantial.levers,
         mode: "single",
         seed: 20260101,
         bnVersion: BN_VERSION,
         zoneFilter: "all",
-      });
+      }, { intervalRounds: 1 });
 
       expect(result.periods).toBe(8);
       expect(result.populationSize).toBe(98923);
@@ -522,7 +548,7 @@ describe("end-to-end simulation", () => {
   it(
     "changing each allocation slice changes the outcomes the engine declares it to touch",
     async () => {
-      const base = policy({ type: "subsidy", intensity: 0.8, budget: 120_000_000, durationMonths: 12 });
+      const base = policy({ channelIds: ["INCOME_SUPPORT"], intensity: 0.8, budget: 120_000_000, durationMonths: 12 });
       const run = async (allocation: PolicyVector["allocation"]) =>
         runSimulation(request({ policy: { ...base, allocation } }), { intervalRounds: 1, searchAgents: 60 });
       const employmentHeavy = await run({ housing: 0.1, education: 0.1, employment: 0.8 });
@@ -543,16 +569,23 @@ describe("end-to-end simulation", () => {
   // each of them short is what lets vitest's worker heartbeat keep up; it also
   // reports which instrument broke the identities instead of "one of six".
   const instrumentRng = createRng(0x1234);
-  const instruments: PolicyVector["type"][] = ["subsidy", "tax", "housing", "education", "labor", "regulation"];
+  const instrumentChannels: { id: string; channels: string[] }[] = [
+    { id: "INCOME_SUPPORT", channels: ["INCOME_SUPPORT"] },
+    { id: "TAX_FISCAL", channels: ["TAX_FISCAL"] },
+    { id: "HOUSING", channels: ["HOUSING"] },
+    { id: "EDUCATION_SKILL", channels: ["EDUCATION_SKILL"] },
+    { id: "LABOR_MARKET", channels: ["LABOR_MARKET"] },
+    { id: "REGULATION", channels: ["REGULATION"] },
+  ];
 
-  for (const instrument of instruments) {
+  for (const instrument of instrumentChannels) {
     it(
-      `holds every accounting identity under a randomized ${instrument} policy`,
+      `holds every accounting identity under a randomized ${instrument.id} policy`,
       async () => {
         const result = await runSimulation(
           request({
             policy: policy({
-              type: instrument,
+              channelIds: instrument.channels,
               intensity: 0.3 + instrumentRng.next() * 0.7,
               budget: 5_000_000 + instrumentRng.next() * 150_000_000,
               // Durations stay short deliberately. These tests assert the

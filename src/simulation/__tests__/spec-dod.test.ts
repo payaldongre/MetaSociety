@@ -21,7 +21,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AccountingViolationError, assertIdentities, computeLevels } from "@/simulation/aggregate";
-import { CENSUS, FIELD_LEDGER, generatePopulation, intervalFor, zonePopulations } from "@/simulation";
+import { CENSUS, CONFIDENCE_ROUNDS, FIELD_LEDGER, generatePopulation, intervalFor, zonePopulations } from "@/simulation";
 import { WORKER_STATUSES } from "@/simulation/types";
 
 const WORKING_AGE_MIN = 15;
@@ -120,6 +120,12 @@ describe("spec §6.7 — protest risk is a mean per-agent propensity, not a unio
 });
 
 describe("spec §3 — uncertainty is a distribution, not a decoration", () => {
+  it("uses a fixed internal ensemble, with no user-facing dial", () => {
+    // Part 4: the confidence ensemble is an internal reproducibility mechanism.
+    // The count is hardcoded in the engine; the UI exposes no slider for it.
+    expect(CONFIDENCE_ROUNDS).toBe(12);
+  });
+
   it("orders the interval and collapses a degenerate sample", () => {
     const spread = intervalFor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(spread.p05).toBeLessThan(spread.p50);

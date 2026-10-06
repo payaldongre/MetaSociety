@@ -35,12 +35,12 @@ import {
   EDUCATION_LEVELS,
   EMPLOYMENT_STATUSES,
   INCOME_CLASSES,
-  POLICY_TYPES,
+  ENGINE_INSTRUMENTS,
   QUALITY_LEVELS,
   SECTORS,
   SENTIMENTS,
 } from "./types";
-import type { Bn, BnNode, CausalFactor, Cpt, PolicyType, Population, ValidationCheck } from "./types";
+import type { Bn, BnNode, CausalFactor, Cpt, EngineInstrument, Population, ValidationCheck } from "./types";
 
 export const BN_VERSION = "1.1.0";
 export const TRUST_BANDS = ["low", "medium", "high"] as const;
@@ -51,7 +51,7 @@ export const SECTOR_OUTPUT_AGG = ["declining", "stable", "rising"] as const;
 
 export const DOMAINS: Record<string, string[]> = {
   /* --- policy + exogenous roots (evidence) --- */
-  PolicyType: [...POLICY_TYPES],
+  PolicyType: [...ENGINE_INSTRUMENTS],
   PolicyIntensity: ["low", "medium", "high"],
   PolicyBudgetShare: ["low", "medium", "high"],
   PolicyDuration: ["short", "medium", "long"],
@@ -60,7 +60,6 @@ export const DOMAINS: Record<string, string[]> = {
   EducationLevel: [...EDUCATION_LEVELS],
   HousingQuality: [...QUALITY_LEVELS],
   TrustInGov: [...TRUST_BANDS],
-  ScenarioExposure: ["low", "medium", "high"],
 
   /* --- aggregate bands (set deterministically from population totals) --- */
   AggregateDemand: [...DEMAND_BANDS],
@@ -104,7 +103,6 @@ const PARENTS: Record<string, string[]> = {
   EducationLevel: ["AgeBand"],
   HousingQuality: ["IncomeClassPrior"],
   TrustInGov: [],
-  ScenarioExposure: [],
 
   AggregateDemand: [],
   AggregateSectorOutput: [],
@@ -113,7 +111,7 @@ const PARENTS: Record<string, string[]> = {
 
   SectorDemand: ["PolicyType", "PolicyIntensity", "PolicyBudgetShare"],
   IncomeClass: ["IncomeClassPrior", "SectorDemand", "PolicyBudgetShare"],
-  SkillRelevance: ["ScenarioExposure", "EducationLevel", "SectorDemand"],
+  SkillRelevance: ["EducationLevel", "SectorDemand"],
   EmploymentStatus: ["IncomeClass", "SectorDemand", "PolicyType", "PolicyIntensity"],
   SpendingCapacity: ["IncomeClass", "EmploymentStatus", "PolicyBudgetShare"],
   HouseholdStress: ["IncomeClass", "EmploymentStatus", "SpendingCapacity", "HousingQuality"],
@@ -177,7 +175,6 @@ const NODE_PASS: Record<string, "micro" | "town" | "feedback"> = {
   EducationLevel: "micro",
   HousingQuality: "micro",
   TrustInGov: "micro",
-  ScenarioExposure: "micro",
   SectorDemand: "micro",
   IncomeClass: "micro",
   SkillRelevance: "micro",
@@ -214,7 +211,6 @@ const NODE_CPT_SOURCE: Record<string, "observed" | "prior" | "derived"> = {
   PolicyIntensity: "prior",
   PolicyBudgetShare: "prior",
   PolicyDuration: "prior",
-  ScenarioExposure: "prior",
   IncomeClassPrior: "observed",
   AgeBand: "observed",
   EducationLevel: "observed",
@@ -477,7 +473,7 @@ export const DOMAIN_LEGENDS: Record<string, string> = {
  * These are the documented, checkable directions of each instrument.
  */
 function policyLogShift(nodeId: string, policy: Record<string, string>): number[] | null {
-  const type = (policy.PolicyType ?? "none") as PolicyType;
+  const type = (policy.PolicyType ?? "none") as EngineInstrument;
   // An unspecified dimension falls back to the reference (medium) scaling, not
   // the minimum: "not stated" must never be read as "weakest possible policy".
   const intensityScale =
@@ -644,8 +640,6 @@ export function observedStateFor(pop: Population, i: number, nodeId: string): nu
       return pop.housing[i];
     case "TrustInGov":
       return pop.trustInGov[i] < 0.36 ? 0 : pop.trustInGov[i] < 0.6 ? 1 : 2;
-    case "ScenarioExposure":
-      return pop.taskExposure[i] < 0.22 ? 0 : pop.taskExposure[i] < 0.38 ? 1 : 2;
     case "SkillRelevance":
       return pop.skillRelevance[i] < 0.45 ? 0 : pop.skillRelevance[i] < 0.72 ? 1 : 2;
     case "EmploymentStatus":
@@ -695,11 +689,10 @@ function uniform(n: number): number[] {
 }
 
 const PRIORS: Record<string, { dist: number[]; source: string }> = {
-  PolicyType: { dist: uniform(POLICY_TYPES.length), source: "prior:assumption" },
+  PolicyType: { dist: uniform(ENGINE_INSTRUMENTS.length), source: "prior:assumption" },
   PolicyIntensity: { dist: uniform(3), source: "prior:assumption" },
   PolicyBudgetShare: { dist: uniform(3), source: "prior:assumption" },
   PolicyDuration: { dist: uniform(3), source: "prior:assumption" },
-  ScenarioExposure: { dist: uniform(3), source: "prior:assumption" },
   AggregateDemand: { dist: uniform(3), source: "derived_from_aggregation" },
   AggregateSectorOutput: { dist: uniform(3), source: "derived_from_aggregation" },
   EmploymentAggregate: { dist: uniform(3), source: "derived_from_aggregation" },
@@ -1201,7 +1194,6 @@ function randomAgentEvidence(pop: Population, agent: number, extra?: Evidence): 
     EducationLevel: EDUCATION_LEVELS[pop.education[agent]],
     HousingQuality: QUALITY_LEVELS[pop.housing[agent]],
     TrustInGov: TRUST_BANDS[pop.trustInGov[agent] < 0.36 ? 0 : pop.trustInGov[agent] < 0.6 ? 1 : 2],
-    ScenarioExposure: (["low", "medium", "high"] as const)[pop.taskExposure[agent] < 0.22 ? 0 : pop.taskExposure[agent] < 0.38 ? 1 : 2],
     // Hold the town backdrop at its neutral setting. Inflation is deliberately
     // left SAMPLED so the demand -> inflation channel can still respond; that
     // is what the "high budget share raises inflation" check exercises.

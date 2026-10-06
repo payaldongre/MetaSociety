@@ -359,11 +359,13 @@ counted-vs-assumed tag. See `src/simulation/bn.ts` for the definitions and the
   consults it. The `validateBnDirection` case "long education policy raises
   high-growth probability" passes because of `PolicyType`/`PolicyIntensity`/
   `PolicyBudgetShare`, **not** duration. It has **no effect on any output**.
-- **Scenarios are nearly inert.** `SCENARIO_PRESETS` define `capability`,
-  `autonomy`, `productivity` and `reallocationMonths`, but the only lever the
-  engine reads is `scenario.adoption` (in `simulate.ts`, feeding
-  `adoptionRamp → exposureOf → ScenarioExposure`). The other four are dead
-  parameters. See §5 of the review notes.
+- **Scenario presets and the `ScenarioExposure` node were removed.** The Modest
+  / Substantial / Extreme presets, their `capability` / `adoption` / `autonomy` /
+  `productivity` / `reallocationMonths` levers, and the `ScenarioExposure` BN node
+  (fed by `adoptionRamp → exposureOf`) are deleted. Four of the five levers never
+  reached the graph, and the one that did was an unverified assumption.
+  `SkillRelevance` now conditions only on `EducationLevel` and `SectorDemand`.
+  See `docs/PARAMETERS.md` §6.
 - **`Aggregate*` stored CPTs are placeholder uniform tables.** They are
   overwritten as evidence each period, so the `PRIORS` entries for them are
   never used for sampling. Correct, but the `derived_from_aggregation` tag is a

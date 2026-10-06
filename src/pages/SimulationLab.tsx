@@ -35,9 +35,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -63,30 +63,33 @@ import {
 } from "lucide-react";
 import {
   BN_VERSION,
+  CHANNELS,
   CENSUS,
+  DECLARED_CHANNELS,
   FIELD_LEDGER,
   GENERATOR_VERSION,
-  LIVE_INSTRUMENTS,
+  IMPLEMENTED_CHANNELS,
   LOWER_IS_BETTER,
   METRIC_KEYS,
   METRIC_LABELS,
   METRIC_UNITS,
   REFERENCE_BUDGET,
-  SCENARIO_PRESETS,
   TOWN_DISTRICT,
   TOWN_NAME,
+  channelsUseAllocation,
   createDecisionEngine,
   describeLineageKey,
+  directTargetsFor,
   encodePolicy,
   getPopulation,
-  instrumentFor,
-  instrumentUsesAllocation,
   lineageKeyFor,
+  pendingChannelNodes,
   populationComposition,
   runSimulation,
+  selectedChannels,
+  type ChannelDefinition,
   type MetricKey,
   type MetricUncertainty,
-  type PolicyType,
   type PolicyVector,
   type ProvenanceTag,
   type SimulationResult,
@@ -105,11 +108,8 @@ const ZONE_LABELS: Record<Zone, string> = {
   south: "South",
 };
 
-/** Instruments come from the dictionary, so the picker cannot drift from it. */
-const POLICY_TYPES: { value: PolicyType; label: string }[] = LIVE_INSTRUMENTS.map((i) => ({
-  value: i.id,
-  label: i.label,
-}));
+/** Channels come from the dictionary, so the picker cannot drift from it. */
+const CHANNEL_OPTIONS: ChannelDefinition[] = [...IMPLEMENTED_CHANNELS, ...DECLARED_CHANNELS];
 
 const PROVENANCE_STYLES: Record<ProvenanceTag, string> = {
   census2011: "bg-success/12 text-success border-success/30",
@@ -284,19 +284,18 @@ function ModelLimitations() {
 
 export default function SimulationLab() {
   /* --- configuration --- */
-  const [policyType, setPolicyType] = useState<PolicyType>("subsidy");
+  const [channelIds, setChannelIds] = useState<string[]>(["INCOME_SUPPORT"]);
   const [policyName, setPolicyName] = useState("Pilgrimage-corridor employment subsidy");
   const [intensityPct, setIntensityPct] = useState([65]);
   const [budgetCrore, setBudgetCrore] = useState([12]);
   const [durationMonths, setDurationMonths] = useState([24]);
   const [alloc, setAlloc] = useState<[number[], number[], number[]]>([[30], [40], [30]]);
-  const [scenarioKey, setScenarioKey] = useState("substantial");
   const [optimize, setOptimize] = useState(false);
   const [engineKind, setEngineKind] = useState<"rule" | "jev" | "llm">("rule");
   const [seed, setSeed] = useState("20260101");
-  const [confidenceRounds, setConfidenceRounds] = useState([16]);
-  const instrument = instrumentFor(policyType);
-  const usesAllocation = instrumentUsesAllocation(policyType);
+  const selected = useMemo(() => selectedChannels(channelIds), [channelIds]);
+  const pendingNodes = useMemo(() => pendingChannelNodes(channelIds), [channelIds]);
+  const usesAllocation = channelsUseAllocation(channelIds);
   /** Previous-best run in this lineage, for the second comparison mode (Part C3). */
   const [lineageBest, setLineageBest] = useState<SavedRun | null>(null);
   const [lineageSize, setLineageSize] = useState(0);
@@ -348,29 +347,25 @@ export default function SimulationLab() {
   const configSignature = useMemo(
     () =>
       JSON.stringify({
-        policyType,
+        channelIds,
         policyName,
         intensityPct,
         budgetCrore,
         durationMonths,
         alloc,
-        scenarioKey,
         optimize,
         engineKind,
         seed,
-        confidenceRounds,
       }),
     [
       alloc,
       budgetCrore,
-      confidenceRounds,
       durationMonths,
       engineKind,
       intensityPct,
       optimize,
       policyName,
-      policyType,
-      scenarioKey,
+      channelIds,
       seed,
     ],
   );
@@ -392,7 +387,6 @@ export default function SimulationLab() {
     setProgress({ phase: "Preparing the agent population", fraction: 0.01 });
 
     const parsedSeed = Number.parseInt(seed, 10);
-    const scenario = SCENARIO_PRESETS[scenarioKey]?.levers ?? SCENARIO_PRESETS.substantial.levers;
 
     // Remote adapters are optional. Without a configured endpoint the engine
     // falls back to the deterministic rule table and says so in its stats.
@@ -410,7 +404,7 @@ export default function SimulationLab() {
     try {
       const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
       const policy: PolicyVector = {
-        type: policyType,
+        channelIds,
         name: policyName.trim() || "Untitled policy",
         intensity: intensityPct[0] / 100,
         budget: budgetCrore[0] * 1e7,
@@ -423,7 +417,7 @@ export default function SimulationLab() {
       };
       lastPolicyRef.current = policy;
 
-      // Part C: this run's lineage — same instrument AND same parameter band.
+      // Part C: this run's lineage — same channel set AND same parameter band.
       // Only its own history seeds the search, so a healthcare run can never
       // inherit from a regulation run. The previous-best member is kept for the
       // "vs previous best in this lineage" comparison.
@@ -437,7 +431,6 @@ export default function SimulationLab() {
         {
           townId: "pandharpur_in_mh",
           policy,
-          scenario,
           mode: optimize ? "optimize" : "single",
           seed: Number.isFinite(parsedSeed) ? parsedSeed : 20260101,
           bnVersion: BN_VERSION,
@@ -445,7 +438,6 @@ export default function SimulationLab() {
         },
         {
           decisionEngine,
-          intervalRounds: confidenceRounds[0],
           lineageSeeds,
           onProgress: (p) => {
             if (runToken.current === token) setProgress(p);
@@ -476,14 +468,12 @@ export default function SimulationLab() {
     alloc,
     budgetCrore,
     configSignature,
-    confidenceRounds,
     durationMonths,
     engineKind,
     intensityPct,
     optimize,
     policyName,
-    policyType,
-    scenarioKey,
+    channelIds,
     seed,
   ]);
 
@@ -520,14 +510,14 @@ export default function SimulationLab() {
   /**
    * Where the policy lands, read off the run itself (SPEC §5.1).
    *
-   * `direct` are the metrics the instrument's own channels target; `spillover`
+   * `direct` are the metrics the policy's own channels target; `spillover`
    * are metrics that moved without being targeted (e.g. inflation responding to
    * a subsidy); `unaffected` moved by nothing measurable. `emergent` is not
    * invented here — it is the engine's own warnings about second-order effects.
    */
   const channelBreakdown = useMemo(() => {
     if (!result) return null;
-    const direct = instrumentFor(policyType).directTargets;
+    const direct = directTargetsFor(channelIds);
     const groups = {
       direct: [] as { key: MetricKey; delta: number }[],
       spillover: [] as { key: MetricKey; delta: number }[],
@@ -541,7 +531,7 @@ export default function SimulationLab() {
       else groups.spillover.push({ key, delta });
     }
     return { ...groups, emergent: result.warnings };
-  }, [result, policyType]);
+  }, [result, channelIds]);
 
   const failedChecks = result ? result.validation.filter((v) => !v.passed) : [];
 
@@ -601,36 +591,57 @@ export default function SimulationLab() {
             </div>
 
             <div className="space-y-1.5">
-              <Label className="text-xs">Instrument</Label>
-              <Select value={policyType} onValueChange={(v) => setPolicyType(v as PolicyType)}>
-                <SelectTrigger className="h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {POLICY_TYPES.map((p) => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* The parameter set below is rendered per instrument from the
-                dictionary: allocation appears only where it genuinely applies. */}
-            <div className="space-y-1.5 rounded-md border bg-muted/20 p-2.5">
-              <p className="text-[11px] leading-snug text-muted-foreground">{instrument.summary}</p>
-              {instrument.newNodesRequired.length > 0 && (
+              <Label className="text-xs">Channels (one or more)</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {CHANNEL_OPTIONS.map((c) => {
+                  const on = channelIds.includes(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      title={c.summary}
+                      onClick={() =>
+                        setChannelIds((prev) => (on ? prev.filter((id) => id !== c.id) : [...prev, c.id]))
+                      }
+                      className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                        on
+                          ? "border-primary bg-primary/15 text-primary"
+                          : "border-border bg-muted/30 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {c.label}
+                      {c.status === "declared" && <span className="ml-1 opacity-70">·declared</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                A policy is a name plus the channels it touches. Pick one or more; a multi-channel policy tags each at
+                once. Channels marked <span className="font-medium">declared</span> are named but not yet wired.
+              </p>
+              {pendingNodes.length > 0 && (
                 <p className="text-[11px] leading-snug text-warning">
-                  Requires network nodes that did not exist before: {instrument.newNodesRequired.join(", ")}. Registered
-                  with documented priors and flagged as modelled assumptions in the provenance ledger.
+                  Not yet wired: {pendingNodes.map((w) => CHANNELS[w.channelId]?.label ?? w.channelId).join(", ")}. Their
+                  BN nodes ({pendingNodes.flatMap((w) => w.missingNodes).join(", ")}) do not exist yet, so the engine
+                  runs only the implemented channels in this set rather than silently substituting another channel.
                 </p>
               )}
-              {instrument.declaredParameters.map((p) => (
-                <p key={p.key} className="text-[11px] leading-snug text-muted-foreground">
-                  • {p.label} — declared for the roadmap, not yet read by the engine.
+            </div>
+
+            {/* The parameter set below is rendered per channel from the
+                dictionary: allocation appears only where it genuinely applies. */}
+            <div className="space-y-1.5 rounded-md border bg-muted/20 p-2.5">
+              {selected.length === 0 ? (
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  No channels selected. This runs the no-policy counterfactual unless you add a channel.
                 </p>
-              ))}
+              ) : (
+                selected.map((c) => (
+                  <p key={c.id} className="text-[11px] leading-snug text-muted-foreground">
+                    <span className="font-medium text-card-foreground">{c.label}</span> — {c.summary}
+                  </p>
+                ))
+              )}
             </div>
 
             <div className="space-y-2">
@@ -662,18 +673,6 @@ export default function SimulationLab() {
               <Slider value={durationMonths} onValueChange={setDurationMonths} min={3} max={60} step={3} />
               <p className="text-[11px] text-muted-foreground">
                 {Math.max(1, Math.round(durationMonths[0] / 3))} simulated periods, 3 months each
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs">Confidence runs</Label>
-                <span className="text-xs font-medium text-card-foreground">{confidenceRounds[0]} seeds</span>
-              </div>
-              <Slider value={confidenceRounds} onValueChange={setConfidenceRounds} min={8} max={100} step={4} />
-              <p className="text-[11px] text-muted-foreground">
-                Full-population replays with different seeds, aggregated into the probability headline. More is more
-                stable and slower.
               </p>
             </div>
 
@@ -725,30 +724,11 @@ export default function SimulationLab() {
             ) : (
               <div className="rounded-md border bg-muted/30 p-3">
                 <p className="text-[11px] leading-snug text-muted-foreground">
-                  {instrument.label} has no housing / education / employment split, so no allocation sliders are shown.
-                  The engine uses this instrument's declared default allocation.
+                  None of the selected channels uses a housing / education / employment split, so no allocation sliders
+                  are shown. The engine uses the family's declared default allocation.
                 </p>
               </div>
             )}
-
-            <div className="space-y-1.5">
-              <Label className="text-xs">AI economic scenario</Label>
-              <Select value={scenarioKey} onValueChange={setScenarioKey}>
-                <SelectTrigger className="h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(SCENARIO_PRESETS).map(([key, preset]) => (
-                    <SelectItem key={key} value={key}>
-                      {preset.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                {SCENARIO_PRESETS[scenarioKey]?.description}
-              </p>
-            </div>
 
             <Separator />
 
@@ -885,7 +865,7 @@ export default function SimulationLab() {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base">Lineage comparison · vs previous best in this lineage</CardTitle>
                   <p className="text-xs text-muted-foreground">
-                    {describeLineageKey(result.lineageKey).instrument} ·{" "}
+                    {describeLineageKey(result.lineageKey).channels} ·{" "}
                     {describeLineageKey(result.lineageKey).bands}. Compared against the best run previously recorded in
                     THIS lineage. A healthcare run is never compared to — or allowed to inherit from — a regulation
                     run.

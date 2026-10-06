@@ -21,6 +21,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { lineageKeyFor, type LineageRecord } from "@/simulation/lineage";
+import { engineInstrumentFor } from "@/simulation/instruments";
 import type { MetricKey, PolicyVector, SimulationResult } from "@/simulation/types";
 
 const STORAGE_KEY = "meta_society_simulations";
@@ -234,7 +235,9 @@ export async function saveRun(
     id: `${result.runId}-${Date.now()}`,
     runId: result.runId,
     policyName: policy.name,
-    policyType: policy.type,
+    // Stored as the engine family the channel set runs as, so the existing
+    // `policy_type` column keeps its meaning without a schema migration.
+    policyType: engineInstrumentFor(policy.channelIds),
     createdAt: new Date().toISOString(),
     effectivenessScore: effectivenessScore(result),
     headline: result.point,

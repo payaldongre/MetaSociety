@@ -37,7 +37,7 @@ import {
   zoneGdpLevel,
   zoneMetrics,
 } from "./aggregate";
-import { allocationFor } from "./instruments";
+import { allocationFor, engineInstrumentFor } from "./instruments";
 import { lineageKeyFor } from "./lineage";
 import type { AggregateBands, PeriodLevels } from "./aggregate";
 import { CHANNEL_LAGS_MONTHS } from "./census";
@@ -67,7 +67,6 @@ import type {
   ParetoCandidate,
   PolicyVector,
   Population,
-  ScenarioLevers,
   SimulationRequest,
   SimulationResult,
   TrajectoryPoint,
@@ -91,7 +90,11 @@ export interface SimulationOptions {
   dePopulation?: number;
   deGenerations?: number;
   skipSearch?: boolean;
-  /** Rounds used to build the random-seed variation range (each is a full-sample trajectory). */
+  /**
+   * Seed rounds used to build the uncertainty ensemble (each is a full-sample
+   * trajectory). Defaults to the fixed internal CONFIDENCE_ROUNDS; there is no
+   * user-facing dial, and tests override it to stay fast.
+   */
   intervalRounds?: number;
   /**
    * Encoded policy vectors from THIS run's lineage, best-first. They seed the
@@ -100,13 +103,13 @@ export interface SimulationOptions {
   lineageSeeds?: number[][];
 }
 
-export const DEFAULT_SCENARIO: ScenarioLevers = {
-  capability: 0.45,
-  adoption: 0.25,
-  autonomy: 0.3,
-  productivity: 2,
-  reallocationMonths: 9,
-};
+/**
+ * Fixed internal count of seed rounds behind the uncertainty ensemble. This is
+ * deliberately NOT a user-facing dial: the confidence ensemble is an internal
+ * reproducibility mechanism, not a tuning knob. Used by the engine when a caller
+ * does not override `intervalRounds`.
+ */
+export const CONFIDENCE_ROUNDS = 12;
 
 /** Reference budget used to band the budget share. Modelled. */
 export const REFERENCE_BUDGET = 200_000_000;
@@ -155,20 +158,20 @@ export function encodePolicy(p: PolicyVector): number[] {
   return [p.intensity, p.budget, p.durationMonths, p.allocation.housing, p.allocation.education, p.allocation.employment];
 }
 
-export function decodeVector(v: number[], type: PolicyVector["type"], name: string): PolicyVector {
+export function decodeVector(v: number[], channelIds: string[], name: string): PolicyVector {
   const alloc = [v[3], v[4], v[5]];
   const sum = alloc.reduce((a, b) => a + b, 0) || 1;
   const normalised = { housing: alloc[0] / sum, education: alloc[1] / sum, employment: alloc[2] / sum };
   return {
-    type,
+    channelIds,
     name,
     intensity: clamp01(v[0]),
     budget: clamp(v[1], 2_000_000, REFERENCE_BUDGET),
     durationMonths: clamp(Math.round(v[2] / 3) * 3, 3, 60),
-    // The three-way split only applies to instruments that use it; for tax /
-    // regulation / healthcare the dictionary's declared default is used, so the
-    // allocation genes are ignored rather than silently pretending to matter.
-    allocation: allocationFor(type, normalised),
+    // The three-way split only applies to channels that use it; for tax /
+    // regulation / healthcare the engine family's declared default is used, so
+    // the allocation genes are ignored rather than silently pretending to matter.
+    allocation: allocationFor(channelIds, normalised),
   };
 }
 
@@ -211,15 +214,16 @@ interface TrajectoryOutcome {
 /* ------------------------------------------------------------------ */
 
 /** Effective policy intensity at a given month, honouring the channel lag. */
-export function rampFor(type: PolicyVector["type"], month: number, intensity: number): number {
+export function rampFor(channelIds: string[], month: number, intensity: number): number {
+  const family = engineInstrumentFor(channelIds);
   const lag =
-    type === "housing"
+    family === "housing"
       ? CHANNEL_LAGS_MONTHS.housing
-      : type === "education"
+      : family === "education"
         ? CHANNEL_LAGS_MONTHS.education
-        : type === "regulation"
+        : family === "regulation"
           ? CHANNEL_LAGS_MONTHS.regulation
-          : type === "tax"
+          : family === "tax"
             ? CHANNEL_LAGS_MONTHS.taxDemand
             : CHANNEL_LAGS_MONTHS.subsidyEmployment;
   return clamp01(intensity * clamp01((month + 0.5) / Math.max(1, lag)));
@@ -231,14 +235,6 @@ function bandFor(value: number, lowCut: number, highCut: number): "low" | "mediu
 
 function trustBandOf(pop: Population, i: number): string {
   return pop.trustInGov[i] < 0.36 ? "low" : pop.trustInGov[i] < 0.6 ? "medium" : "high";
-}
-
-function exposureOf(pop: Population, i: number, adoptionRamp: number): number {
-  return clamp01(pop.taskExposure[i] + adoptionRamp * 0.35);
-}
-
-function exposureBandOf(value: number): string {
-  return value < 0.22 ? "low" : value < 0.38 ? "medium" : "high";
 }
 
 /* ------------------------------------------------------------------ */
@@ -262,7 +258,6 @@ function* trajectoryGenerator(
   pop: Population,
   c: CompiledBn,
   policy: PolicyVector,
-  scenario: ScenarioLevers,
   baselineGdpLevel: number,
   spec: PeriodSpec,
   rng: Rng,
@@ -285,11 +280,13 @@ function* trajectoryGenerator(
   let decisionConfidenceSum = 0;
   let decisionPeriods = 0;
   let inflationBand = 1;
+  // The engine behaviour family the policy's channel set runs as. Derived once;
+  // declared-only channel sets resolve to "none" (no silent substitution).
+  const family = engineInstrumentFor(policy.channelIds);
 
   for (let p = 0; p < spec.count; p += 1) {
     const month = (p + 1) * spec.monthsEach;
-    const applied = rampFor(policy.type, month, policy.intensity);
-    const adoptionRamp = clamp01(scenario.adoption * clamp01((month + 3) / 36));
+    const applied = rampFor(policy.channelIds, month, policy.intensity);
 
     // Budget is a FLOW spread across the duration, capped by what is left.
     const perPeriodBudget = (policy.budget / Math.max(1, policy.durationMonths)) * spec.monthsEach;
@@ -311,11 +308,10 @@ function* trajectoryGenerator(
     for (let a = 0; a < agents.length; a += 1) {
       const i = agents[a];
       if (!pop.active[i]) continue;
-      const exposure = exposureOf(pop, i, adoptionRamp);
 
       states.fill(0);
       const fixed = applyEvidence(c, states, {
-        PolicyType: policy.type,
+        PolicyType: family,
         PolicyIntensity: intensityBand,
         PolicyBudgetShare: budgetBand,
         PolicyDuration: durationBand,
@@ -324,7 +320,6 @@ function* trajectoryGenerator(
         EducationLevel: EDUCATION_LEVELS[pop.education[i]],
         HousingQuality: QUALITY_LEVELS[pop.housing[i]],
         TrustInGov: trustBandOf(pop, i),
-        ScenarioExposure: exposureBandOf(exposure),
       });
       // Validate the evidence construction once per run: sampling is only exact
       // when conditioning happens on fully-fixed ancestry.
@@ -340,10 +335,10 @@ function* trajectoryGenerator(
 
       // Reachability: informality gates whether an instrument touches a citizen.
       const informal = pop.informality[i] === 1;
-      const reach = policy.type === "tax" ? 1 : informal ? 0.34 : 0.92;
+      const reach = family === "tax" ? 1 : informal ? 0.34 : 0.92;
       transfersAssigned += (budgetThisPeriod / agents.length) * reach;
 
-      if (policy.type === "tax") {
+      if (family === "tax") {
         const formal = pop.employmentStatus[i] === EMPLOYMENT_STATUSES.indexOf("formal");
         if (formal) taxRevenue += (budgetThisPeriod / agents.length) * 0.85 * clamp01(policy.intensity);
       }
@@ -367,7 +362,7 @@ function* trajectoryGenerator(
         // the human-capital lift. (Both weights are ASSUMPTIONS.)
         const policyEffect =
           1 +
-          (policy.type === "subsidy" || policy.type === "labor" ? 0.035 : 0.012) *
+          (family === "subsidy" || family === "labor" ? 0.035 : 0.012) *
             effectiveApplied *
             reach *
             (1 + policy.allocation.employment * 0.6 + policy.allocation.education * 0.3);
@@ -382,7 +377,7 @@ function* trajectoryGenerator(
       // The education slice funds skills/retraining, which protects the savings
       // stock a household can absorb. (ASSUMPTION.)
       const policySavings =
-        ((policy.type === "subsidy" ? 0.05 : 0) + policy.allocation.education * 0.03) *
+        ((family === "subsidy" ? 0.05 : 0) + policy.allocation.education * 0.03) *
         effectiveApplied *
         reach;
       pop.savingsMonths[i] = clamp(
@@ -449,11 +444,10 @@ function* trajectoryGenerator(
     for (let a = 0; a < agents.length; a += 1) {
       const i = agents[a];
       if (!pop.active[i]) continue;
-      const exposure = exposureOf(pop, i, adoptionRamp);
 
       states.fill(0);
       const fixed = applyEvidence(c, states, {
-        PolicyType: policy.type,
+        PolicyType: family,
         PolicyIntensity: intensityBand,
         PolicyBudgetShare: budgetBand,
         PolicyDuration: durationBand,
@@ -462,7 +456,6 @@ function* trajectoryGenerator(
         EducationLevel: EDUCATION_LEVELS[pop.education[i]],
         HousingQuality: QUALITY_LEVELS[pop.housing[i]],
         TrustInGov: trustBandOf(pop, i),
-        ScenarioExposure: exposureBandOf(exposure),
         ...bands,
         Inflation: (["low", "moderate", "high"] as const)[inflationBand],
       });
@@ -480,7 +473,7 @@ function* trajectoryGenerator(
       // the trust update and therefore protest propensity. (ASSUMPTION.) The
       // no-policy baseline keeps the unweighted 1.0 so it is unchanged.
       const allocationCare =
-        policy.type === "none" ? 1 : 0.6 + 0.7 * (policy.allocation.housing + policy.allocation.education);
+        family === "none" ? 1 : 0.6 + 0.7 * (policy.allocation.housing + policy.allocation.education);
       pop.trustInGov[i] = clamp01(
         pop.trustInGov[i] + (target - 1) * 0.012 * allocationCare - (protest === 2 ? 0.01 : 0),
       );
@@ -638,7 +631,7 @@ function describeTownState(
 ): string {
   const employment = level.workingAgeCount > 0 ? (level.employedCount / level.workingAgeCount) * 100 : 0;
   return [
-    `Month ${month} of a ${policy.durationMonths}-month ${policy.type} policy at intensity ${(policy.intensity * 100).toFixed(0)}%.`,
+    `Month ${month} of a ${policy.durationMonths}-month policy over channels [${policy.channelIds.length > 0 ? policy.channelIds.join(" + ") : "none"}] at intensity ${(policy.intensity * 100).toFixed(0)}%.`,
     `Working-age residents ${level.workingAgeCount}.`,
     `Employment rate ${employment.toFixed(1)}%.`,
     `Mean household income per capita INR ${Math.round(level.meanHouseholdIncomePerCapita)}.`,
@@ -814,12 +807,12 @@ export async function runSimulation(
   const c = compileBn(buildBn(base));
 
   const periods = Math.max(1, Math.round(request.policy.durationMonths / MONTHS_PER_PERIOD));
-  const scenario = request.scenario ?? DEFAULT_SCENARIO;
+  const policyFamily = engineInstrumentFor(request.policy.channelIds);
 
   /* 2. Baseline: the same engine, the same population, policy = none */
   onProgress({ phase: "Running no-policy baseline", fraction: 0.1 });
   const baselinePolicy: PolicyVector = {
-    type: "none",
+    channelIds: [],
     name: "Baseline (no policy)",
     intensity: 0,
     budget: 0,
@@ -832,7 +825,6 @@ export async function runSimulation(
       baselinePop,
       c,
       baselinePolicy,
-      scenario,
       0,
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed ^ 0x1a2b3c),
@@ -862,13 +854,12 @@ export async function runSimulation(
     // Search tier: reduced agent sample, coarser periods, and the deterministic
     // decision rule instead of a remote decision engine. Labelled in the UI.
     const fitness = (v: number[]): number[] => {
-      const decoded = decodeVector(v, request.policy.type, request.policy.name);
+      const decoded = decodeVector(v, request.policy.channelIds, request.policy.name);
       const outcome = driveSync(
         trajectoryGenerator(
           clonePopulation(base),
           c,
           decoded,
-          scenario,
           baselineGdp,
           searchSpec,
           createRng(request.seed ^ 0xd0e5),
@@ -901,7 +892,7 @@ export async function runSimulation(
     });
     deName = de.strategy;
     paretoFront = de.front.slice(0, 8).map((f, idx) => ({
-      params: decodeVector(f.params, request.policy.type, request.policy.name),
+      params: decodeVector(f.params, request.policy.channelIds, request.policy.name),
       objectives: Object.fromEntries(OBJECTIVE_LABELS.map((label, i) => [label, f.objectives[i]])),
       selected: idx === 0,
     }));
@@ -927,7 +918,6 @@ export async function runSimulation(
       treatedPop,
       c,
       request.policy,
-      scenario,
       baselineGdp,
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed),
@@ -943,7 +933,7 @@ export async function runSimulation(
 
   /* 5. Credible intervals from full-population seed variants */
   onProgress({ phase: "Estimating the random-seed variation range", fraction: 0.88 });
-  const intervalRounds = options.intervalRounds ?? 4;
+  const intervalRounds = options.intervalRounds ?? CONFIDENCE_ROUNDS;
 
   const treatedMetrics = withGrowth(treatedOutcome.finalLevel, baselineGdp);
   const samples = new Map<MetricKey, number[]>();
@@ -960,7 +950,6 @@ export async function runSimulation(
         clonePopulation(base),
         c,
         request.policy,
-        scenario,
         baselineGdp,
         { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
         createRng(request.seed ^ (0x1000 + round)),
@@ -1109,7 +1098,7 @@ export async function runSimulation(
     reachability: treatedOutcome.reachability,
   });
 
-  if (treatedOutcome.reachability < 0.6 && request.policy.type !== "tax") {
+  if (treatedOutcome.reachability < 0.6 && policyFamily !== "tax") {
     warnings.push(
       `Only ${(treatedOutcome.reachability * 100).toFixed(0)}% of intended transfers reach citizens: informal employment gates access to the instrument.`,
     );
@@ -1121,7 +1110,7 @@ export async function runSimulation(
   const runId = fnv1a(
     [
       request.townId,
-      request.policy.type,
+      policyFamily,
       request.policy.intensity.toFixed(4),
       request.policy.budget.toFixed(0),
       request.policy.durationMonths,
@@ -1158,7 +1147,7 @@ export async function runSimulation(
       period: i,
       month: (i + 1) * MONTHS_PER_PERIOD,
       metrics: withGrowth(level, baselineGdp),
-      appliedIntensity: rampFor(request.policy.type, (i + 1) * MONTHS_PER_PERIOD, request.policy.intensity),
+      appliedIntensity: rampFor(request.policy.channelIds, (i + 1) * MONTHS_PER_PERIOD, request.policy.intensity),
       cumulativeSpend: level.cumulativeSpend,
     })),
     alerts: treatedOutcome.alerts,
@@ -1193,7 +1182,7 @@ function evidenceForAgent(
   bands: Record<string, string>,
 ): Evidence {
   return {
-    PolicyType: policy.type,
+    PolicyType: engineInstrumentFor(policy.channelIds),
     PolicyIntensity: bandFor(policy.intensity, 0.4, 0.72),
     PolicyBudgetShare: bandFor(policy.budget / REFERENCE_BUDGET, 0.25, 0.6),
     PolicyDuration: policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long",
@@ -1202,29 +1191,7 @@ function evidenceForAgent(
     EducationLevel: EDUCATION_LEVELS[pop.education[i]],
     HousingQuality: QUALITY_LEVELS[pop.housing[i]],
     TrustInGov: trustBandOf(pop, i),
-    ScenarioExposure: exposureBandOf(pop.taskExposure[i]),
     ...bands,
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* Scenario presets (§7.3)                                             */
-/* ------------------------------------------------------------------ */
-
-export const SCENARIO_PRESETS: Record<string, { label: string; levers: ScenarioLevers; description: string }> = {
-  modest: {
-    label: "Modest",
-    description: "AI's economic impact resembles the internet's: real, but within historical norms.",
-    levers: { capability: 0.35, adoption: 0.2, autonomy: 0.15, productivity: 1.5, reallocationMonths: 4 },
-  },
-  substantial: {
-    label: "Substantial",
-    description: "AI performs about half of knowledge work, mostly autonomously; growth roughly doubles.",
-    levers: { capability: 0.65, adoption: 0.45, autonomy: 0.5, productivity: 2.5, reallocationMonths: 12 },
-  },
-  extreme: {
-    label: "Extreme",
-    description: "AI outperforms humans on most knowledge tasks, with little reallocation.",
-    levers: { capability: 0.92, adoption: 0.8, autonomy: 0.85, productivity: 6, reallocationMonths: 30 },
-  },
-};
