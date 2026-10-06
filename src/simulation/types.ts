@@ -60,7 +60,17 @@ export type QualityLevel = (typeof QUALITY_LEVELS)[number];
 export const SENTIMENTS = ["negative", "neutral", "positive"] as const;
 export type Sentiment = (typeof SENTIMENTS)[number];
 
-export const POLICY_TYPES = [
+/**
+ * Internal engine/BN behaviour family.
+ *
+ * A policy is no longer one of these — it is a NAME plus a SET OF CHANNELS (see
+ * channel-dictionary.ts). This vocabulary survives only as the engine's internal
+ * abstraction: each channel maps to one engine family (instruments.ts), and the
+ * Bayesian node `PolicyType` is drawn from this fixed domain. The ORDER is
+ * deliberately unchanged from the old closed enum so the network's conditional
+ * tables and reproducibility are preserved.
+ */
+export const ENGINE_INSTRUMENTS = [
   "none",
   "tax",
   "subsidy",
@@ -70,7 +80,7 @@ export const POLICY_TYPES = [
   "education",
   "health",
 ] as const;
-export type PolicyType = (typeof POLICY_TYPES)[number];
+export type EngineInstrument = (typeof ENGINE_INSTRUMENTS)[number];
 
 /** How a given field was obtained. Rendered in the UI's provenance panel. */
 export const PROVENANCE_TAGS = ["census2011", "estimated", "modelled", "assumed"] as const;
@@ -120,7 +130,7 @@ export interface Population {
   /** Per-sector automation/augmentation exposure mean, 0..1. */
   taskExposure: Float64Array;
 
-  // --- latent behavioural parameters (sampled once, fixed within a scenario) ---
+  // --- latent behavioural parameters (sampled once, fixed within a run) ---
   riskAversion: Float64Array;
   timePreference: Float64Array;
   mobility: Float64Array;
@@ -167,22 +177,13 @@ export interface PolicyParams {
 }
 
 export interface PolicyVector extends PolicyParams {
-  type: PolicyType;
+  /**
+   * Confirmed set of channels this policy touches. This replaces the old closed
+   * `PolicyType` enum: a policy is a name plus one or more channels, and the
+   * engine derives its behaviour family from the set (see instruments.ts).
+   */
+  channelIds: string[];
   name: string;
-}
-
-/** Anthropic-Economic-Scenarios-style levers (§7.3). */
-export interface ScenarioLevers {
-  /** 0..1 share of knowledge tasks AI can perform. */
-  capability: number;
-  /** 0..1 share of firms/agents that adopt it. */
-  adoption: number;
-  /** 0..1 share of adopted work that runs without a human. */
-  autonomy: number;
-  /** 1..10 output multiplier on augmented/automated tasks. */
-  productivity: number;
-  /** Months for a displaced worker to find new work. */
-  reallocationMonths: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -369,7 +370,6 @@ export interface ParetoCandidate {
 export interface SimulationRequest {
   townId: string;
   policy: PolicyVector;
-  scenario?: ScenarioLevers;
   objectives?: string[];
   mode: "single" | "optimize";
   seed: number;

@@ -4,9 +4,9 @@ _Every knob the Simulation Lab exposes, its range, units, default, and the basis
 for it._
 
 > Compiled from `src/simulation/simulate.ts` (`DE_BOUNDS`, `decodeVector`,
-> `REFERENCE_BUDGET`, `MONTHS_PER_PERIOD`, `SCENARIO_PRESETS`, `policyLogShift`,
-> `rampFor`), `src/simulation/census.ts` (`CHANNEL_LAGS_MONTHS`) and the
-> controls in `src/pages/SimulationLab.tsx`.
+> `REFERENCE_BUDGET`, `MONTHS_PER_PERIOD`, `policyLogShift`, `rampFor`),
+> `src/simulation/census.ts` (`CHANNEL_LAGS_MONTHS`) and the controls in
+> `src/pages/SimulationLab.tsx`.
 
 **A parameter is only "sourced" if a published figure or an official scheme
 benchmark is cited. Everything else is explicitly an ASSUMPTION.** None of the
@@ -147,22 +147,19 @@ per period — **ASSUMPTION**.
 | Protest propensity | `0.72 × prev + 0.26 × (band/2) + 0.02 × (1 − trust)` | **ASSUMPTION** |
 | Migration rate | `(0.012 + mobility × 0.03) × months × 0.34`, only when intent band = leave | **ASSUMPTION** |
 
-## 6. Scenario levers (`SCENARIO_PRESETS`)
+## 6. Scenario levers — removed
 
-| Lever | Modest | Substantial | Extreme | Read by the engine? |
-| --- | --- | --- | --- | --- |
-| `capability` | 0.35 | 0.65 | 0.92 | **NO** |
-| `adoption` | 0.20 | 0.45 | 0.80 | Yes → `adoptionRamp = adoption × min(1, (month+3)/36)` |
-| `autonomy` | 0.15 | 0.50 | 0.85 | **NO** |
-| `productivity` | 1.5 | 2.5 | 6.0 | **NO** |
-| `reallocationMonths` | 4 | 12 | 30 | **NO** |
+The Modest / Substantial / Extreme "AI economic scenario" presets, and their
+`capability` / `adoption` / `autonomy` / `productivity` / `reallocationMonths`
+levers, have been **deleted**. Four of the five levers never reached the network;
+the one that did (`adoption`, through the `ScenarioExposure` node) was an
+unverified assumption, not a calibrated relationship. The Lab exposes no scenario
+selector, the engine reads no scenario levers, and the `ScenarioExposure` BN node
+is gone (`SkillRelevance` now conditions only on `EducationLevel` and
+`SectorDemand`).
 
-All four scenario presets are **ASSUMPTIONS** adapted from the Anthropic
-Economic Index style of capability/adoption/autonomy framing; none is calibrated
-to Pandharpur. Only `adoption` currently reaches the model, through
-`ScenarioExposure` (via `exposureOf = clamp01(taskExposure + adoptionRamp × 0.35)`).
-See `docs/BN_STRUCTURE.md` §7 and the review notes: the scenario selector
-changes far less than it claims to.
+If a real, citable reason to model AI-driven labour shifts for Pandharpur appears
+later, it comes back properly wired from scratch — not restored from this removal.
 
 ## 7. Differential Evolution search ranges
 

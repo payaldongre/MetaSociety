@@ -5,7 +5,7 @@
  * result was only ever compared against the no-policy baseline. Part C adds two
  * things, both of which need a stable notion of "which kind of policy is this":
  *
- *   1. a LINEAGE KEY — instrument type plus a coarse parameter-similarity
+ *   1. a LINEAGE KEY — the policy's channel set plus a coarse parameter-similarity
  *      bucket, so runs are grouped by what they are, not pooled into one shared
  *      gene pool;
  *   2. a similarity metric, so a lineage's own history can seed the search and
@@ -13,7 +13,7 @@
  *      rather than only against doing nothing.
  *
  * A healthcare lineage must never inherit traits from a regulation lineage;
- * because the key is prefixed with the instrument type, it never can.
+ * because the key is prefixed with the sorted channel set, it never can.
  */
 
 import { REFERENCE_BUDGET } from "./simulate";
@@ -26,24 +26,30 @@ function bandIndex(value: number, cuts: number[]): number {
   return i;
 }
 
+/** Sorted channel set as a stable key segment; "none" for an empty set. */
+function channelKeyOf(policy: PolicyVector): string {
+  return policy.channelIds.length > 0 ? [...policy.channelIds].sort().join("+") : "none";
+}
+
 /**
- * The lineage key: instrument type, then intensity / budget-share / duration
- * bands. The type prefix is what guarantees cross-instrument isolation.
+ * The lineage key: the sorted channel set, then intensity / budget-share /
+ * duration bands. The channel-set prefix is what guarantees cross-channel
+ * isolation.
  */
 export function lineageKeyFor(policy: PolicyVector): string {
   const intensity = bandIndex(policy.intensity, [0.4, 0.72]);
   const budget = bandIndex(policy.budget / REFERENCE_BUDGET, [0.25, 0.6]);
   const duration = policy.durationMonths <= 12 ? 0 : policy.durationMonths <= 36 ? 1 : 2;
-  return `${policy.type}|${intensity}|${budget}|${duration}`;
+  return `${channelKeyOf(policy)}|${intensity}|${budget}|${duration}`;
 }
 
 /** Human-readable parts of a lineage key. */
-export function describeLineageKey(key: string): { instrument: string; bands: string } {
-  const [instrument, intensity, budget, duration] = key.split("|");
+export function describeLineageKey(key: string): { channels: string; bands: string } {
+  const [channels, intensity, budget, duration] = key.split("|");
   const I = ["low", "medium", "high"];
   const D = ["short", "medium", "long"];
   return {
-    instrument: instrument ?? "unknown",
+    channels: channels ?? "unknown",
     bands: `${I[Number(intensity)] ?? "?"} intensity · ${I[Number(budget)] ?? "?"} budget · ${D[Number(duration)] ?? "?"}`,
   };
 }
@@ -54,7 +60,7 @@ export function describeLineageKey(key: string): { instrument: string; bands: st
  * Returns 1 (maximally distant) for two different instruments.
  */
 export function policyDistance(a: PolicyVector, b: PolicyVector): number {
-  if (a.type !== b.type) return 1;
+  if (channelKeyOf(a) !== channelKeyOf(b)) return 1;
   const di = Math.abs(a.intensity - b.intensity);
   const db = Math.abs(a.budget - b.budget) / REFERENCE_BUDGET;
   const dd = Math.abs(a.durationMonths - b.durationMonths) / 60;

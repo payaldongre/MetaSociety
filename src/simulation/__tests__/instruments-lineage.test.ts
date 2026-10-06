@@ -1,73 +1,115 @@
 /**
- * Tests for the instrument parameter dictionary (Part A) and lineage grouping
- * (Part C). These are deliberately cheap: no full simulation run, just the data
- * and the pure helpers, so they add milliseconds to the suite.
+ * Tests for the channel dictionary (Part A) and lineage grouping (Part C).
+ * These are deliberately cheap: no full simulation run, just the data and the
+ * pure helpers, so they add milliseconds to the suite.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { decodeVector } from "@/simulation/simulate";
 import {
-  INSTRUMENTS,
-  LIVE_INSTRUMENTS,
+  CHANNELS,
+  DECLARED_CHANNELS,
+  IMPLEMENTED_CHANNELS,
   allocationFor,
-  instrumentFor,
-  instrumentUsesAllocation,
-} from "@/simulation/instruments";
-import {
   bestInLineage,
+  buildBn,
+  channelsUseAllocation,
+  compileBn,
+  createRng,
   describeLineageKey,
+  engineInstrumentFor,
+  getPopulation,
   lineageHistory,
   lineageKeyFor,
+  pendingChannelNodes,
   policyDistance,
-} from "@/simulation/lineage";
+  policyResponse,
+  suggestChannels,
+} from "@/simulation";
 import type { PolicyVector } from "@/simulation/types";
-import { buildBn, compileBn, createRng, getPopulation, policyResponse } from "@/simulation";
 
-describe("Part A — instrument parameter dictionary", () => {
-  it("renders allocation only where it genuinely applies", () => {
-    expect(instrumentUsesAllocation("subsidy")).toBe(true);
-    expect(instrumentUsesAllocation("housing")).toBe(true);
-    expect(instrumentUsesAllocation("education")).toBe(true);
-    expect(instrumentUsesAllocation("labor")).toBe(true);
-    // These instruments have no three-way split and must not show one.
-    expect(instrumentUsesAllocation("tax")).toBe(false);
-    expect(instrumentUsesAllocation("regulation")).toBe(false);
-    expect(instrumentUsesAllocation("health")).toBe(false);
+describe("Part A — channel dictionary", () => {
+  it("maps every implemented channel onto a real engine family", () => {
+    expect(engineInstrumentFor(["INCOME_SUPPORT"])).toBe("subsidy");
+    expect(engineInstrumentFor(["TAX_FISCAL"])).toBe("tax");
+    expect(engineInstrumentFor(["HOUSING"])).toBe("housing");
+    expect(engineInstrumentFor(["EDUCATION_SKILL"])).toBe("education");
+    expect(engineInstrumentFor(["LABOR_MARKET"])).toBe("labor");
+    expect(engineInstrumentFor(["REGULATION"])).toBe("regulation");
+    expect(engineInstrumentFor(["HEALTHCARE_ACCESS"])).toBe("health");
   });
 
-  it("declares healthcare as a genuinely new category needing new nodes", () => {
-    const health = instrumentFor("health");
-    expect(health.newNodesRequired).toContain("HealthInsurance");
-    expect(health.newNodesRequired).toContain("HealthBurden");
-    // It must not silently reuse the subsidy's channels.
-    expect(health.channels).not.toEqual(instrumentFor("subsidy").channels);
+  it("leaves declared channels unwired — never a silent fallback", () => {
+    for (const channel of DECLARED_CHANNELS) {
+      expect(engineInstrumentFor([channel.id])).toBe("none");
+      expect(pendingChannelNodes([channel.id]).length).toBeGreaterThan(0);
+    }
+    // A policy that mixes a declared channel with an implemented one still runs
+    // the implemented one — but the declared one is surfaced as pending.
+    expect(engineInstrumentFor(["INFRASTRUCTURE", "HOUSING"])).toBe("housing");
+    expect(pendingChannelNodes(["INFRASTRUCTURE", "HOUSING"])).toEqual([
+      { channelId: "INFRASTRUCTURE", missingNodes: ["InfraAccess"] },
+    ]);
   });
 
-  it("gives every live instrument a real parameter set and direct targets", () => {
-    for (const instrument of LIVE_INSTRUMENTS) {
-      expect(instrument.parameters.length).toBeGreaterThan(0);
-      expect(instrument.parameters.some((p) => p.id === "intensity")).toBe(true);
-      expect(instrument.directTargets.length).toBeGreaterThan(0);
+  it("renders allocation only where channels genuinely use it", () => {
+    expect(channelsUseAllocation(["INCOME_SUPPORT"])).toBe(true);
+    expect(channelsUseAllocation(["HOUSING"])).toBe(true);
+    expect(channelsUseAllocation(["EDUCATION_SKILL"])).toBe(true);
+    expect(channelsUseAllocation(["LABOR_MARKET"])).toBe(true);
+    // These channels have no three-way split and must not show one.
+    expect(channelsUseAllocation(["TAX_FISCAL"])).toBe(false);
+    expect(channelsUseAllocation(["REGULATION"])).toBe(false);
+    expect(channelsUseAllocation(["HEALTHCARE_ACCESS"])).toBe(false);
+    expect(channelsUseAllocation([])).toBe(false);
+  });
+
+  it("gives every channel a real parameter set and direct targets", () => {
+    for (const channel of [...IMPLEMENTED_CHANNELS, ...DECLARED_CHANNELS]) {
+      expect(channel.parameters.length).toBeGreaterThan(0);
+      expect(channel.parameters.some((p) => p.key === "intensity")).toBe(true);
+      expect(channel.directTargets.length).toBeGreaterThan(0);
     }
   });
 
-  it("ignores the allocation genes for instruments that have no split", () => {
-    const decoded = decodeVector([0.6, 5e6, 12, 0.9, 0.05, 0.05], "tax", "T");
-    expect(decoded.allocation).toEqual(INSTRUMENTS.tax.defaultAllocation);
+  it("includes the two added channels, declared with their pending nodes", () => {
+    expect(CHANNELS.INFRASTRUCTURE.status).toBe("declared");
+    expect(CHANNELS.INFRASTRUCTURE.bnNodesPending).toContain("InfraAccess");
+    expect(CHANNELS.FINANCIAL_INCLUSION.status).toBe("declared");
+    expect(CHANNELS.FINANCIAL_INCLUSION.bnNodesPending).toContain("CreditAccess");
+  });
 
-    const subsidy = decodeVector([0.6, 5e6, 12, 0.8, 0.1, 0.1], "subsidy", "S");
+  it("ignores the allocation genes for channels that have no split", () => {
+    const decoded = decodeVector([0.6, 5e6, 12, 0.9, 0.05, 0.05], ["TAX_FISCAL"], "T");
+    expect(decoded.allocation).toEqual({ housing: 0, education: 0, employment: 0 });
+
+    const subsidy = decodeVector([0.6, 5e6, 12, 0.8, 0.1, 0.1], ["INCOME_SUPPORT"], "S");
     expect(subsidy.allocation.housing).toBeCloseTo(0.8, 6);
-    // allocationFor never returns a three-way split for tax.
-    expect(allocationFor("tax", { housing: 1, education: 0, employment: 0 })).toEqual(
-      INSTRUMENTS.tax.defaultAllocation,
-    );
+    // allocationFor never returns a three-way split for a tax channel.
+    expect(allocationFor(["TAX_FISCAL"], { housing: 1, education: 0, employment: 0 })).toEqual({
+      housing: 0,
+      education: 0,
+      employment: 0,
+    });
+  });
+
+  it("suggests channels contextually and reports a clean zero-match", () => {
+    // "healthcare", "medical" and "hospital access" all surface the same channel
+    // without an exact keyword hit each.
+    expect(suggestChannels("healthcare for rural families")).toContain("HEALTHCARE_ACCESS");
+    expect(suggestChannels("medical cover expansion")).toContain("HEALTHCARE_ACCESS");
+    expect(suggestChannels("hospital access programme")).toContain("HEALTHCARE_ACCESS");
+    expect(suggestChannels("road and water infrastructure")).toContain("INFRASTRUCTURE");
+    // The real generalisation test: a policy name that matches NOTHING must
+    // return an empty set, so the UI can say so plainly rather than fall back.
+    expect(suggestChannels("free laptops for students")).toEqual([]);
   });
 });
 
 describe("Part C — lineage grouping", () => {
   const subsidy: PolicyVector = {
-    type: "subsidy",
+    channelIds: ["INCOME_SUPPORT"],
     name: "S",
     intensity: 0.65,
     budget: 12e7,
@@ -75,16 +117,23 @@ describe("Part C — lineage grouping", () => {
     allocation: { housing: 0.3, education: 0.4, employment: 0.3 },
   };
 
-  it("isolates lineages by instrument — a health policy never joins a subsidy one", () => {
-    const health: PolicyVector = { ...subsidy, type: "health" };
-    const regulation: PolicyVector = { ...subsidy, type: "regulation" };
-    expect(lineageKeyFor(health).startsWith("health|")).toBe(true);
-    expect(lineageKeyFor(regulation).startsWith("regulation|")).toBe(true);
+  it("isolates lineages by channel set — a health policy never joins a subsidy one", () => {
+    const health: PolicyVector = { ...subsidy, channelIds: ["HEALTHCARE_ACCESS"] };
+    const regulation: PolicyVector = { ...subsidy, channelIds: ["REGULATION"] };
+    expect(lineageKeyFor(health).startsWith("HEALTHCARE_ACCESS|")).toBe(true);
+    expect(lineageKeyFor(regulation).startsWith("REGULATION|")).toBe(true);
     expect(lineageKeyFor(health)).not.toBe(lineageKeyFor(subsidy));
     expect(policyDistance(health, subsidy)).toBe(1);
   });
 
-  it("separates the same instrument by parameter band", () => {
+  it("treats a multi-channel set as its own lineage, independent of order", () => {
+    const a: PolicyVector = { ...subsidy, channelIds: ["HOUSING", "INCOME_SUPPORT"] };
+    const b: PolicyVector = { ...subsidy, channelIds: ["INCOME_SUPPORT", "HOUSING"] };
+    expect(lineageKeyFor(a)).toBe(lineageKeyFor(b));
+    expect(lineageKeyFor(a)).not.toBe(lineageKeyFor(subsidy));
+  });
+
+  it("separates the same channel set by parameter band", () => {
     const low = { ...subsidy, intensity: 0.2 };
     const high = { ...subsidy, intensity: 0.9 };
     expect(lineageKeyFor(low)).not.toBe(lineageKeyFor(high));
@@ -92,7 +141,7 @@ describe("Part C — lineage grouping", () => {
 
   it("returns only a lineage's own history, best-first", () => {
     const key = lineageKeyFor(subsidy);
-    const other: PolicyVector = { ...subsidy, type: "tax" };
+    const other: PolicyVector = { ...subsidy, channelIds: ["TAX_FISCAL"] };
     const records = [
       { lineageKey: key, policy: subsidy, effectivenessScore: 55 },
       { lineageKey: key, policy: subsidy, effectivenessScore: 72 },
@@ -108,7 +157,7 @@ describe("Part C — lineage grouping", () => {
 
   it("describes a lineage key without throwing", () => {
     const described = describeLineageKey(lineageKeyFor(subsidy));
-    expect(described.instrument).toBe("subsidy");
+    expect(described.channels).toBe("INCOME_SUPPORT");
     expect(described.bands).toContain("intensity");
   });
 });
@@ -117,8 +166,10 @@ describe("healthcare is a dedicated channel, not a subsidy alias", () => {
   const pop = getPopulation();
   const c = compileBn(buildBn(pop));
   const n = 400;
-  const strong = (type: PolicyVector["type"]) => ({
-    PolicyType: type,
+  // The BN node is still named PolicyType; its domain is the internal engine
+  // family vocabulary, which a channel set maps onto (see instruments.ts).
+  const strong = (family: string) => ({
+    PolicyType: family,
     PolicyIntensity: "high",
     PolicyBudgetShare: "high",
   });

@@ -47,15 +47,27 @@ export {
   type NodeSpec,
 } from "./bn";
 export {
-  INSTRUMENTS,
-  LIVE_INSTRUMENTS,
+  CHANNEL_ENGINE_FAMILY,
   allocationFor,
-  instrumentFor,
-  instrumentUsesAllocation,
-  type InstrumentDefinition,
-  type InstrumentParam,
-  type InstrumentParamId,
+  channelParams,
+  channelsUseAllocation,
+  directTargetsFor,
+  engineInstrumentFor,
+  hasChannel,
+  pendingChannelNodes,
+  selectedChannels,
 } from "./instruments";
+export {
+  CHANNELS,
+  DECLARED_CHANNELS,
+  IMPLEMENTED_CHANNELS,
+  composePolicy,
+  suggestChannels,
+  type ChannelDefinition,
+  type ChannelParam,
+  type ChannelStatus,
+  type ComposedPolicy,
+} from "./channel-dictionary";
 export {
   LOWER_IS_BETTER,
   METRIC_LABELS,
@@ -73,11 +85,10 @@ export {
 export { crowdingDistance, differentialEvolution, dominates, nonDominatedSort, paretoFront, randomSearch } from "./de";
 export { createDecisionEngine, createJevDecisionEngine, createLlmDecisionEngine, createRuleDecisionEngine } from "./decision";
 export {
-  DEFAULT_SCENARIO,
+  CONFIDENCE_ROUNDS,
   DE_BOUNDS,
   OBJECTIVE_LABELS,
   REFERENCE_BUDGET,
-  SCENARIO_PRESETS,
   decodeVector,
   encodePolicy,
   getPopulation,

@@ -20,7 +20,7 @@ import { isResultsStale } from "@/pages/SimulationLab";
 import type { PolicyVector, SimulationResult } from "@/simulation/types";
 
 const POLICY: PolicyVector = {
-  type: "subsidy",
+  channelIds: ["INCOME_SUPPORT"],
   name: "Wiring test subsidy",
   intensity: 0.6,
   budget: 5_000_000,
