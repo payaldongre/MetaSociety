@@ -43,9 +43,16 @@ export default defineConfig({
           testTimeout: 300_000,
           hookTimeout: 60_000,
           pool: "forks",
+          // Each test FILE gets its own forked worker, and files run one at a
+          // time. The engine suite blocks its worker for tens of seconds in a
+          // single synchronous span (it rolls a full 98,923-agent trajectory),
+          // which can trip vitest's fixed 60s worker RPC timeout if several
+          // files share one worker. Isolating the files keeps the cheap suites
+          // running to completion and stops a heavy file from aborting the run.
           poolOptions: {
-            forks: { singleFork: true },
+            forks: { singleFork: false },
           },
+          fileParallelism: false,
         },
       },
     ],

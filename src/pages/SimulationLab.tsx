@@ -96,6 +96,8 @@ import {
   type Zone,
 } from "@/simulation";
 import { listRuns, saveRun, type SavedRun } from "@/lib/runStore";
+import { PolicyBriefPanel } from "@/components/PolicyBriefPanel";
+import { assessMetric, impactStatement, reproducibilityInfo, uncertaintyNarrative } from "@/simulation";
 
 /* ------------------------------------------------------------------ */
 /* Formatting                                                          */
@@ -644,6 +646,16 @@ export default function SimulationLab() {
               )}
             </div>
 
+            <PolicyBriefPanel channelIds={channelIds} />
+
+            {/* The numeric sliders are DEMOTED into an advanced section (spec §27):
+                the primary workflow is the structured policy brief above, and the
+                engine's intensity/budget/duration are derived from it. */}
+            <details className="rounded-md border bg-muted/20 p-3">
+              <summary className="cursor-pointer text-xs font-medium text-card-foreground">
+                Advanced numeric controls (optional override)
+              </summary>
+              <div className="mt-3 space-y-4">
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Intensity</Label>
@@ -729,6 +741,8 @@ export default function SimulationLab() {
                 </p>
               </div>
             )}
+              </div>
+            </details>
 
             <Separator />
 
@@ -826,6 +840,61 @@ export default function SimulationLab() {
 
           {result && !running && (
             <>
+              {/* Readable impact assessment FIRST, before any raw statistic
+                  (spec §28). Every figure below is read from the engine; the
+                  wording states direction strength and magnitude calibration. */}
+              <Card className="animate-fade-up border-primary/25">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Impact assessment</CardTitle>
+                  <p className="text-xs text-muted-foreground">Status quo vs proposed policy</p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-sm leading-relaxed text-card-foreground">
+                    {impactStatement(result, policyName || "Selected policy")}
+                  </p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {uncertaintyNarrative(result).summary}
+                  </p>
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    {([
+                      "employmentRatePct",
+                      "happinessIndex",
+                      "meanIncome",
+                      "inflationPct",
+                      "protestRisk",
+                      "gini",
+                    ] as MetricKey[]).map((key) => {
+                      const a = assessMetric(result, key);
+                      return (
+                        <div key={key} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-muted-foreground">{a.label}</span>
+                          <span className="text-right text-card-foreground">
+                            {a.movement === "flat" ? (
+                              "roughly unchanged"
+                            ) : (
+                              <>
+                                {a.movement === "increase" ? <TrendingUp className="inline h-3 w-3" /> : <TrendingDown className="inline h-3 w-3" />}{" "}
+                                {a.movement}
+                              </>
+                            )}
+                            <span className="ml-1.5 text-muted-foreground">· dir {a.directionStrength} · mag {a.magnitudeCalibration}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {result.seasonality && (
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      Wari seasonality: {result.seasonality.policyCarriesPilgrimage ? "the policy carries a pilgrimage component" : "the policy carries no pilgrimage component"}
+                      {" · "}modelled peak pressure {result.seasonality.peakPressure.toFixed(2)} (temporary, never added to residents).
+                    </p>
+                  )}
+                  <p className="text-[10px] leading-snug text-muted-foreground">
+                    Reproducible simulation · engine {reproducibilityInfo(result).engineVersion} · id {reproducibilityInfo(result).reproducibilityId}. Technical values are under the Impact tab.
+                  </p>
+                </CardContent>
+              </Card>
+
               {resultsStale && (
                 <Card className="animate-fade-up border-warning/40 bg-warning/5">
                   <CardContent className="flex items-start gap-3 pt-6">

@@ -57,6 +57,7 @@ import {
 } from "./bn";
 import { differentialEvolution, randomSearch, type DeBounds } from "./de";
 import { createDecisionEngine } from "./decision";
+import { applySeasonalPressure, buildSeasonalProfile, type SeasonalProfile } from "./seasonality";
 import { clonePopulation, generatePopulation, validatePopulation } from "./population";
 import { clamp, clamp01, createRng, fnv1a, type Rng } from "./rng";
 import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, METRIC_KEYS, QUALITY_LEVELS, ZONES } from "./types";
@@ -114,6 +115,11 @@ export const CONFIDENCE_ROUNDS = 12;
 /** Reference budget used to band the budget share. Modelled. */
 export const REFERENCE_BUDGET = 200_000_000;
 const MONTHS_PER_PERIOD = 3;
+/**
+ * Calendar month the simulated trajectory begins in. Fixed for reproducibility,
+ * and chosen so a default 24-month run spans at least one Wari window (June–July).
+ */
+export const SEASONAL_START_MONTH = 1;
 
 /* ------------------------------------------------------------------ */
 /* Objectives                                                          */
@@ -809,6 +815,27 @@ export async function runSimulation(
   const periods = Math.max(1, Math.round(request.policy.durationMonths / MONTHS_PER_PERIOD));
   const policyFamily = engineInstrumentFor(request.policy.channelIds);
 
+  // Wari seasonal pressure (spec §12). Modelled as temporary visitor pressure on
+  // top of the resident population, never as extra residents. The baseline gets
+  // the background season too, so the treated-vs-baseline difference is the
+  // POLICY's pilgrimage effect — a general policy therefore acquires none.
+  const baselineSeasonal = buildSeasonalProfile({
+    periods,
+    monthsEach: MONTHS_PER_PERIOD,
+    startMonth: SEASONAL_START_MONTH,
+    channelIds: [],
+    intensity: 0,
+  });
+  const policySeasonal = buildSeasonalProfile({
+    periods,
+    monthsEach: MONTHS_PER_PERIOD,
+    startMonth: SEASONAL_START_MONTH,
+    channelIds: request.policy.channelIds,
+    intensity: request.policy.intensity,
+  });
+  const baselinePressure = meanCivicPressure(baselineSeasonal);
+  const policyPressure = meanCivicPressure(policySeasonal);
+
   /* 2. Baseline: the same engine, the same population, policy = none */
   onProgress({ phase: "Running no-policy baseline", fraction: 0.1 });
   const baselinePolicy: PolicyVector = {
@@ -831,7 +858,7 @@ export async function runSimulation(
     ),
   );
   const baselineGdp = baselineOutcome.finalLevel.gdpLevel || 1;
-  const baselineMetrics = withGrowth(baselineOutcome.finalLevel, baselineGdp);
+  const baselineMetrics = adjustSeasonal(withGrowth(baselineOutcome.finalLevel, baselineGdp), baselinePressure);
 
   /* 3. Optional evolutionary search over the policy space */
   let paretoFront: ParetoCandidate[] = [];
@@ -935,7 +962,7 @@ export async function runSimulation(
   onProgress({ phase: "Estimating the random-seed variation range", fraction: 0.88 });
   const intervalRounds = options.intervalRounds ?? CONFIDENCE_ROUNDS;
 
-  const treatedMetrics = withGrowth(treatedOutcome.finalLevel, baselineGdp);
+  const treatedMetrics = adjustSeasonal(withGrowth(treatedOutcome.finalLevel, baselineGdp), policyPressure);
   const samples = new Map<MetricKey, number[]>();
   for (const key of Object.keys(treatedMetrics) as MetricKey[]) samples.set(key, [treatedMetrics[key]]);
 
@@ -955,7 +982,7 @@ export async function runSimulation(
         createRng(request.seed ^ (0x1000 + round)),
       ),
     );
-    const m = withGrowth(outcome.finalLevel, baselineGdp);
+    const m = adjustSeasonal(withGrowth(outcome.finalLevel, baselineGdp), policyPressure);
     for (const key of Object.keys(m) as MetricKey[]) samples.get(key)?.push(m[key]);
   }
 
@@ -1044,10 +1071,12 @@ export async function runSimulation(
       key,
       treatedOutcome.levels.map((level, i): TrajectoryPoint => {
         const baseLevel = baselineOutcome.levels[Math.min(i, baselineOutcome.levels.length - 1)];
+        const basePressure = baselineSeasonal.points[i]?.civicPressure ?? baselinePressure;
+        const policyPressureHere = policySeasonal.points[i]?.civicPressure ?? policyPressure;
         return {
           month: (i + 1) * MONTHS_PER_PERIOD,
-          baseline: withGrowth(baseLevel, baselineGdp)[key],
-          simulated: withGrowth(level, baselineGdp)[key],
+          baseline: adjustSeasonal(withGrowth(baseLevel, baselineGdp), basePressure)[key],
+          simulated: adjustSeasonal(withGrowth(level, baselineGdp), policyPressureHere)[key],
         };
       }),
     ]),
@@ -1155,6 +1184,25 @@ export async function runSimulation(
     decisionStats: engine.stats(),
     validation: validationChecks(base, c),
     warnings,
+    seasonality: {
+      policyCarriesPilgrimage: policySeasonal.exposure !== "none",
+      exposure: policySeasonal.exposure,
+      infraPolicy: policySeasonal.infraPolicy,
+      startMonth: SEASONAL_START_MONTH,
+      baselineMeanPressure: baselinePressure,
+      policyMeanPressure: policyPressure,
+      wariStep: policySeasonal.wariStep,
+      peakPressure: policySeasonal.peakPressure,
+      points: policySeasonal.points.map((pt, i) => ({
+        period: pt.period,
+        month: pt.month,
+        monthOfYear: pt.monthOfYear,
+        season: pt.season,
+        inWari: pt.inWari,
+        baselinePressure: baselineSeasonal.points[i]?.civicPressure ?? 0,
+        policyPressure: pt.civicPressure,
+      })),
+    },
   };
 
   onProgress({ phase: "Complete", fraction: 1 });
@@ -1173,6 +1221,24 @@ function withGrowth(level: PeriodLevels, baselineGdp: number): Record<MetricKey,
   const metrics = metricsFromLevels(level);
   metrics.gdpGrowthPct = baselineGdp > 0 ? ((level.gdpLevel - baselineGdp) / baselineGdp) * 100 : 0;
   return metrics;
+}
+
+/** Mean civic pressure across a seasonal profile. */
+function meanCivicPressure(profile: SeasonalProfile): number {
+  return profile.points.length
+    ? profile.points.reduce((s, p) => s + p.civicPressure, 0) / profile.points.length
+    : 0;
+}
+
+/**
+ * Fold the Wari seasonal pressure into the two metrics it affects. This is a
+ * MODEL ASSUMPTION (only the sign is asserted; see seasonality.ts). It is
+ * applied identically to baseline and treated for any policy that does not carry
+ * a pilgrimage channel, so those runs' deltas are unchanged.
+ */
+function adjustSeasonal(metrics: Record<MetricKey, number>, civicPressure: number): Record<MetricKey, number> {
+  const adjusted = applySeasonalPressure(civicPressure, metrics.happinessIndex, metrics.protestRisk);
+  return { ...metrics, happinessIndex: adjusted.happinessIndex, protestRisk: adjusted.protestRisk };
 }
 
 function evidenceForAgent(

@@ -418,4 +418,35 @@ export interface SimulationResult {
   decisionStats: DecisionStats;
   validation: ValidationCheck[];
   warnings: string[];
+
+  /**
+   * Wari seasonal pressure report (redesign spec §12). Present for every run, so
+   * the evaluator can see the modelled seasonal load even when the policy is not
+   * a pilgrimage one; `policyCarriesPilgrimage` states whether the POLICY itself
+   * contributes a pilgrimage effect.
+   */
+  seasonality?: SeasonalReport;
+}
+
+export interface SeasonalReport {
+  /** True when the policy itself touches the pilgrimage channel. */
+  policyCarriesPilgrimage: boolean;
+  exposure: string;
+  infraPolicy: string;
+  startMonth: number;
+  /** Mean civic pressure over the run, baseline (no policy) vs policy. */
+  baselineMeanPressure: number;
+  policyMeanPressure: number;
+  /** Mean Wari-period pressure minus mean non-Wari pressure (the measurable step). */
+  wariStep: number;
+  peakPressure: number;
+  points: {
+    period: number;
+    month: number;
+    monthOfYear: number;
+    season: string;
+    inWari: boolean;
+    baselinePressure: number;
+    policyPressure: number;
+  }[];
 }

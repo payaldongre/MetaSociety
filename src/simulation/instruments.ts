@@ -39,6 +39,11 @@ export const CHANNEL_ENGINE_FAMILY: Record<string, EngineInstrument> = {
   FOOD_SECURITY: "none",
   INFRASTRUCTURE: "none",
   FINANCIAL_INCLUSION: "none",
+  // Pilgrimage's effect is the dedicated seasonal Wari model (seasonality.ts),
+  // not a generic micro-instrument family. Mapping it to "none" means a
+  // pilgrimage-only policy carries no generic income/employment spillover, and
+  // a general policy acquires no pilgrimage effect — see spec §10.
+  PILGRIMAGE_FACILITIES: "none",
 };
 
 /** Channels that contribute a housing / education / employment allocation split. */

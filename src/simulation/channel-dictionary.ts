@@ -260,6 +260,27 @@ export const CHANNELS: Record<string, ChannelDefinition> = {
     bnNodesPending: ["CreditAccess"],
     directTargets: ["meanIncome", "gini"],
   },
+
+  /**
+   * Pilgrimage is an ADDITIONAL domain, not the default explanation for every
+   * Pandharpur outcome (spec §9). Its engine mechanism is the seasonal Wari
+   * model (seasonality.ts), not the generic micro-instrument family, so it maps
+   * to family "none" in instruments.ts and carries no generic income/employment
+   * effect. That is what keeps a general policy free of pilgrimage spillovers and
+   * vice versa (spec §10).
+   */
+  PILGRIMAGE_FACILITIES: {
+    id: "PILGRIMAGE_FACILITIES",
+    label: "Pilgrimage facilities (Wari)",
+    summary: "Wari-facing sanitation, rest areas, crowd management, lodging, transit and pilgrim welfare.",
+    keywords: ["pilgrim", "pilgrimage", "wari", "warkari", "darshan", "temple", "yatra", "palkhi", "ashadhi"],
+    parameters: [
+      { key: "intensity", label: "Intensity", type: "percent", min: 5, max: 100, default: 65, help: "Share of the seasonal-facility programme's maximum strength." },
+    ],
+    bnNodes: ["PilgrimFootfall", "SeasonalInfraLoad", "LocalInfraQuality"],
+    status: "implemented",
+    directTargets: ["happinessIndex", "protestRisk"],
+  },
 };
 
 /** Every channel that is fully wired into the engine. */
@@ -347,6 +368,7 @@ const SYNONYMS: Record<string, string[]> = {
   DIGITAL_ACCESS: ["broadband", "telecom", "digitisation", "digitization", "e-governance"],
   ENVIRONMENT_CLIMATE: ["emissions", "carbon", "pollution", "renewables", "climate resilience", "conservation"],
   FOOD_SECURITY: ["nutrition", "ration", "subsistence", "hunger", "agricultural", "irrigation"],
+  PILGRIMAGE_FACILITIES: ["warkari", "devotee", "darshan", "vitthal", "rukmini", "ekadashi", "pandharpur", "pilgrimage", "yatra"],
 };
 
 /**
