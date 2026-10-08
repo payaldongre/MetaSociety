@@ -451,6 +451,25 @@ describe("policy brief gate is enforced by the engine itself", () => {
     },
     240_000,
   );
+
+  it(
+    "runs a declared-only policy with no fabricated causal effect and says so",
+    async () => {
+      // FOOD_SECURITY is named in the dictionary but has no Bayesian-network
+      // path yet. The run must not silently invent an effect: the treated path
+      // should equal the baseline, and the result must carry the reason.
+      const b = shortBrief(["FOOD_SECURITY"]);
+      const res = await runSimulation(
+        request({ policy: policy({ channelIds: ["FOOD_SECURITY"] }), policyBrief: b }),
+        { intervalRounds: 1 },
+      );
+      expect(res.warnings.some((w) => /declared but not yet wired/i.test(w))).toBe(true);
+      // Nothing is applied: no money leaves the budget and no agent's state is
+      // shifted by a channel the network cannot represent.
+      expect(res.trajectoryTrace.every((t) => t.cumulativeSpend === 0)).toBe(true);
+    },
+    240_000,
+  );
 });
 
 /* ------------------------------------------------------------------ */

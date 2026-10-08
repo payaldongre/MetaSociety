@@ -37,7 +37,7 @@ import {
   zoneGdpLevel,
   zoneMetrics,
 } from "./aggregate";
-import { allocationFor, engineInstrumentFor } from "./instruments";
+import { allocationFor, engineInstrumentFor, pendingChannelNodes } from "./instruments";
 import { lineageKeyFor } from "./lineage";
 import type { AggregateBands, PeriodLevels } from "./aggregate";
 import { CHANNEL_LAGS_MONTHS } from "./census";
@@ -295,10 +295,16 @@ function* trajectoryGenerator(
     const month = (p + 1) * spec.monthsEach;
     const applied = rampFor(policy.channelIds, month, policy.intensity);
 
+    // A channel set the dictionary marks "declared" resolves to the "none"
+    // family: nothing in the network represents it. Such a run must be an exact
+    // no-op rather than a spending programme, so its budget is never applied —
+    // otherwise money would leak into aggregate demand, income, savings and
+    // housing through no modelled causal path. Every other family is unchanged.
+    const policyApplies = family !== "none";
     // Budget is a FLOW spread across the duration, capped by what is left.
     const perPeriodBudget = (policy.budget / Math.max(1, policy.durationMonths)) * spec.monthsEach;
     const remaining = Math.max(0, policy.budget - cumulativeSpend);
-    const budgetThisPeriod = Math.min(perPeriodBudget, remaining);
+    const budgetThisPeriod = policyApplies ? Math.min(perPeriodBudget, remaining) : 0;
     const budgetScale = perPeriodBudget > 0 ? budgetThisPeriod / perPeriodBudget : 0;
     const effectiveApplied = applied * budgetScale;
     cumulativeSpend += budgetThisPeriod;
@@ -847,6 +853,21 @@ export async function runSimulation(
 
   const periods = Math.max(1, Math.round(policy.durationMonths / MONTHS_PER_PERIOD));
   const policyFamily = engineInstrumentFor(policy.channelIds);
+
+  // A channel the dictionary marks "declared" has no Bayesian-network path yet.
+  // `engineInstrumentFor` resolves a declared-only set to the "none" family
+  // rather than substituting a different channel, and the run says so here, so
+  // no result can silently imply a causal effect the network cannot represent.
+  const pendingChannels = pendingChannelNodes(policy.channelIds);
+  if (pendingChannels.length > 0) {
+    const names = pendingChannels.map((p) => p.channelId).join(", ");
+    const missing = pendingChannels.flatMap((p) => p.missingNodes).join(", ");
+    warnings.push(
+      policyFamily === "none"
+        ? `Every selected channel is declared but not yet wired into the network (${names}). Their Bayesian-network nodes (${missing}) do not exist, so this run applies no causal effect: no budget is spent and no BN state is shifted. Any small difference from the baseline is seed-sampling noise, not a modelled impact.`
+        : `Some selected channels are declared but not yet wired into the network (${names}); they contribute no causal effect and the run uses the implemented channels only (family "${policyFamily}").`,
+    );
+  }
 
   // Wari seasonal pressure (spec §12). Modelled as temporary visitor pressure on
   // top of the resident population, never as extra residents. The baseline gets

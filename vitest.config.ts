@@ -11,12 +11,18 @@ const alias = { "@": path.resolve(__dirname, "./src") };
  * Freebuff manages) are left untouched.
  *
  * Two projects, because the two test suites have opposite requirements. The
- * simulation engine tests block a worker for tens of seconds at a time while
- * they roll a full 98,923-agent trajectory, which starves vitest's worker
- * heartbeat when they share a pool with the DOM tests. They also need no DOM at
- * all. So: the app tests keep the template's jsdom environment and setup file,
- * and the engine tests get a Node environment, a long timeout, and one forked
- * worker to themselves.
+ * simulation engine tests block their worker for tens of seconds at a time
+ * while they roll a full 98,923-agent trajectory, and they need no DOM at all.
+ * The app tests keep the template's jsdom environment and setup file.
+ *
+ * The simulation project runs in a single node worker *thread*, one file at a
+ * time. Under the `forks` pool the synchronous engine runs starved the child
+ * process' message loop badly enough that vitest's fixed 60s RPC heartbeat
+ * ("Timeout calling onTaskUpdate") fired after the suite had already finished,
+ * so `vitest run` reported every assertion as passing yet still exited non-zero.
+ * worker_threads delivers the parent's RPC replies on the worker's own message
+ * port, which removes that spurious timeout without touching the timeouts,
+ * assertions or simulation semantics themselves.
  */
 export default defineConfig({
   test: {
@@ -42,15 +48,13 @@ export default defineConfig({
           include: ["src/simulation/**/*.{test,spec}.{ts,tsx}"],
           testTimeout: 300_000,
           hookTimeout: 60_000,
-          pool: "forks",
-          // Each test FILE gets its own forked worker, and files run one at a
-          // time. The engine suite blocks its worker for tens of seconds in a
-          // single synchronous span (it rolls a full 98,923-agent trajectory),
-          // which can trip vitest's fixed 60s worker RPC timeout if several
-          // files share one worker. Isolating the files keeps the cheap suites
-          // running to completion and stops a heavy file from aborting the run.
+          pool: "threads",
+          // One worker thread for every simulation file, and files run one at a
+          // time. Running the full 98,923-agent trajectory in one synchronous
+          // span still blocks the thread, so isolation between files (each gets
+          // a fresh module registry) keeps shared state from leaking.
           poolOptions: {
-            forks: { singleFork: false },
+            threads: { singleThread: true },
           },
           fileParallelism: false,
         },
