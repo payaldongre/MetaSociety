@@ -915,6 +915,11 @@ export default function SimulationLab() {
                               <>
                                 {a.movement === "increase" ? <TrendingUp className="inline h-3 w-3" /> : <TrendingDown className="inline h-3 w-3" />}{" "}
                                 {a.movement}
+                                {a.direction !== "neutral" && (
+                                  <span className={a.direction === "improving" ? "text-success" : "text-destructive"}>
+                                    {" "}({a.direction})
+                                  </span>
+                                )}
                               </>
                             )}
                             <span className="ml-1.5 text-muted-foreground">· dir {a.directionStrength} · mag {a.magnitudeCalibration}</span>

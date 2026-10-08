@@ -70,26 +70,50 @@ export function seedEnsembleWording(
   };
 }
 
-const VERB: Record<string, string> = {
+/**
+ * NUMERIC movement of a metric: which way the number itself went. This is
+ * deliberately separate from whether that movement is desirable. Conflating the
+ * two was a real bug: a falling Gini coefficient is an IMPROVEMENT, but because
+ * the old helper returned the desirability as "increase", the UI drew an upward
+ * arrow and printed "increase" beside a value that had gone down, and the
+ * impact statement then called the improvement "adverse".
+ */
+export type MetricMovement = "increase" | "decrease" | "flat";
+
+/** DESIRABILITY of the numeric movement, from `LOWER_IS_BETTER` (aggregate.ts). */
+export type MetricDirection = "improving" | "adverse" | "neutral";
+
+const VERB: Record<MetricMovement, string> = {
   increase: "increase",
   decrease: "decrease",
   flat: "stay roughly unchanged",
-  unclear: "move uncertainly",
 };
 
-function movementOf(metric: MetricKey, delta: number, material: number): string {
+/** Which way did the number move? Sign only — no desirability judgement. */
+export function movementOf(_metric: MetricKey, delta: number, material: number): MetricMovement {
   if (Math.abs(delta) <= material) return "flat";
-  const up = delta > 0;
-  const good = LOWER_IS_BETTER.includes(metric) ? !up : up;
-  return good ? "increase" : "decrease";
+  return delta > 0 ? "increase" : "decrease";
+}
+
+/**
+ * Is that numeric movement an improvement or an adverse change for this metric?
+ * Uses the single `LOWER_IS_BETTER` list, so the sign, the arrow, the
+ * improvement/adverse label and the impact statement can never disagree.
+ */
+export function directionOf(metric: MetricKey, delta: number, material: number): MetricDirection {
+  if (Math.abs(delta) <= material) return "neutral";
+  const better = LOWER_IS_BETTER.includes(metric) ? delta < 0 : delta > 0;
+  return better ? "improving" : "adverse";
 }
 
 /** One metric, expressed as a plain-language assessment with its evidence labels. */
 export interface MetricAssessment {
   metric: MetricKey;
   label: string;
-  /** Plain-language movement: increase / decrease / stay roughly unchanged. */
-  movement: string;
+  /** NUMERIC movement of the value: increase / decrease / stay roughly unchanged. */
+  movement: MetricMovement;
+  /** Whether that movement is an improvement or an adverse change for this metric. */
+  direction: MetricDirection;
   delta: number;
   unit: string;
   directionStrength: EvidenceStrength;
@@ -106,23 +130,24 @@ export function assessMetric(result: SimulationResult, metric: MetricKey): Metri
   const delta = result.point[metric] - result.baseline[metric];
   const material = Math.max(1e-9, Math.abs(result.baseline[metric]) * 1e-4);
   const movement = movementOf(metric, delta, material);
+  const direction = directionOf(metric, delta, material);
   const directionStrength = directionStrengthFromEnsemble(u);
   const magnitudeCalibration = magnitudeCalibrationFor(metric);
   const label = METRIC_LABELS[metric] ?? metric;
   const unit = METRIC_UNITS[metric] ?? "";
-  const good = movement === "increase" && !LOWER_IS_BETTER.includes(metric);
 
   const phrase =
     movement === "flat"
       ? `${label} is expected to ${VERB.flat} relative to the status quo.`
       : `The proposed policy is expected to ${VERB[movement]} ${label.toLowerCase()}${
-          good ? "" : " (an adverse direction)"
+          direction === "adverse" ? " (an adverse direction)" : " (an improving direction)"
         } relative to the status quo.`;
 
   return {
     metric,
     label,
     movement,
+    direction,
     delta,
     unit,
     directionStrength,
@@ -136,12 +161,8 @@ export function assessMetric(result: SimulationResult, metric: MetricKey): Metri
 /** The single readable statement the result UI must lead with (spec §28). */
 export function impactStatement(result: SimulationResult, policyName: string): string {
   const assessments = (Object.keys(result.point) as MetricKey[]).map((m) => assessMetric(result, m));
-  const improving = assessments.filter(
-    (a) => a.movement !== "flat" && !LOWER_IS_BETTER.includes(a.metric) === (a.movement === "increase"),
-  );
-  const adverse = assessments.filter(
-    (a) => a.movement !== "flat" && LOWER_IS_BETTER.includes(a.metric) === (a.movement === "increase"),
-  );
+  const improving = assessments.filter((a) => a.direction === "improving");
+  const adverse = assessments.filter((a) => a.direction === "adverse");
   const strongest = assessments
     .map((a) => a.directionStrength)
     .reduce<EvidenceStrength>((best, s) => (rank(s) > rank(best) ? s : best), "uncalibrated");

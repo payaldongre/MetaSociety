@@ -17,7 +17,10 @@
 import { describe, expect, it } from "vitest";
 
 import { BN_VERSION } from "@/simulation";
-import { runSimulation } from "@/simulation/simulate";
+import { buildBn, compileBn, policyResponse } from "@/simulation/bn";
+import { generatePopulation } from "@/simulation/population";
+import { createRng } from "@/simulation/rng";
+import { groundedPolicyBands, runSimulation } from "@/simulation/simulate";
 import type { PolicyVector, SimulationResult } from "@/simulation/types";
 
 const base = (o: Partial<PolicyVector> = {}): PolicyVector => ({
@@ -110,4 +113,79 @@ describe("plausibility of policy magnitudes", () => {
     },
     180_000,
   );
+});
+
+/* ------------------------------------------------------------------ */
+/* GGG grounding must REACH the network (no raw-policy bypass)         */
+/* ------------------------------------------------------------------ */
+
+describe("GGG grounding reaches the Bayesian network", () => {
+  it("the grounded policy bands track the historical effect scale, monotonically", () => {
+    // The seam through which GGG enters the network is `groundedPolicyBands`.
+    // Before this fix the raw intensity/budget reached the network at full
+    // strength; here a weakly comparable local application must read LOW and a
+    // fully comparable one must read HIGH — i.e. the grounding changes the
+    // scenario the network consumes rather than being decorative.
+    const p = base({ intensity: 0.8, budget: 12e7, durationMonths: 12 });
+    const weak = groundedPolicyBands(p, p.intensity, 0.1);
+    const mid = groundedPolicyBands(p, p.intensity, 0.5);
+    const strong = groundedPolicyBands(p, p.intensity, 1);
+
+    expect(weak.intensityBand).toBe("low");
+    expect(weak.budgetBand).toBe("low");
+    expect(mid.intensityBand).toBe("medium");
+    expect(strong.intensityBand).toBe("high");
+    expect(strong.budgetBand).toBe("high");
+
+    const rank = (b: string) => ["low", "medium", "high"].indexOf(b);
+    expect(rank(weak.intensityBand)).toBeLessThan(rank(mid.intensityBand));
+    expect(rank(mid.intensityBand)).toBeLessThan(rank(strong.intensityBand));
+    expect(rank(weak.budgetBand)).toBeLessThan(rank(strong.budgetBand));
+  });
+
+  it("duration is a real policy input and is not grounded away", () => {
+    expect(groundedPolicyBands(base({ durationMonths: 12 }), 0.5, 0.1).durationBand).toBe("short");
+    expect(groundedPolicyBands(base({ durationMonths: 24 }), 0.5, 0.1).durationBand).toBe("medium");
+    expect(groundedPolicyBands(base({ durationMonths: 60 }), 0.5, 0.1).durationBand).toBe("long");
+  });
+
+  it("the grounded band makes the network respond less than the raw band it replaced", () => {
+    // This pins the ACTUAL causal consequence of the fix, at the network level
+    // rather than at the helper's return value: the network's own
+    // P(formal employment) response to the band GGG selects for a local policy
+    // must be strictly smaller than its response to the raw intensity/budget
+    // band. If GGG were being bypassed, the two would be identical.
+    const pop = generatePopulation(20260101);
+    const c = compileBn(buildBn(pop));
+
+    const p = base({ channelIds: ["INCOME_SUPPORT"], intensity: 0.65, budget: 12e7, durationMonths: 12 });
+    // effectScale = 1 reproduces the policy's RAW band, because the band is the
+    // grounded value banded against fixed cut-offs.
+    const raw = groundedPolicyBands(p, p.intensity, 1);
+    const grounded = groundedPolicyBands(p, p.intensity, 0.1);
+
+    // The grounding actually moves the policy into a lower band.
+    expect(raw.intensityBand).toBe("medium");
+    expect(grounded.intensityBand).toBe("low");
+    expect(raw.budgetBand).toBe("high");
+    expect(grounded.budgetBand).toBe("low");
+
+    const sample = (bands: ReturnType<typeof groundedPolicyBands>) =>
+      policyResponse(
+        c,
+        pop,
+        { PolicyType: "labor", PolicyIntensity: bands.intensityBand, PolicyBudgetShare: bands.budgetBand },
+        "EmploymentStatus",
+        [2],
+        3000,
+        createRng(0x51af1e),
+      );
+
+    const rawP = sample(raw);
+    const groundedP = sample(grounded);
+    // The network reads the grounded (weaker) scenario, not the raw one.
+    expect(groundedP).toBeLessThan(rawP);
+    // And it is a materially smaller shift, not a rounding difference.
+    expect(rawP - groundedP).toBeGreaterThan(0.005);
+  }, 120_000);
 });

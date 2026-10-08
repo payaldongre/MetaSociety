@@ -27,7 +27,10 @@ const METRICS: MetricKey[] = [
   "migrationOutflowPct",
 ];
 
-function fixture(overrides: Partial<Record<MetricKey, number>> = {}): SimulationResult {
+function fixture(
+  overrides: Partial<Record<MetricKey, number>> = {},
+  baselineOverrides: Partial<Record<MetricKey, number>> = {},
+): SimulationResult {
   const point = Object.fromEntries(METRICS.map((m) => [m, 50])) as Record<MetricKey, number>;
   const baseline = Object.fromEntries(METRICS.map((m) => [m, 50])) as Record<MetricKey, number>;
   const uncertainty = Object.fromEntries(
@@ -48,7 +51,7 @@ function fixture(overrides: Partial<Record<MetricKey, number>> = {}): Simulation
     uncertainty,
     lineageKey: "k",
     byZone: {} as SimulationResult["byZone"],
-    baseline: { ...baseline, employmentRatePct: 58 },
+    baseline: { ...baseline, employmentRatePct: 58, ...baselineOverrides },
     trajectories: {} as SimulationResult["trajectories"],
     distributions: {} as SimulationResult["distributions"],
     paretoFront: [],
@@ -142,5 +145,75 @@ describe("reproducibility info (spec §21)", () => {
     expect(r.engineVersion).toContain("BN 1.1.0");
     expect(r.reproducibilityId).toBe("run-1");
     expect(r.seedNote).toMatch(/metadata, not policy parameters/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Metric direction: the arrow, the value and the label must agree.     */
+/* ------------------------------------------------------------------ */
+
+describe("metric direction is internally consistent (spec §19)", () => {
+  type Case = { metric: MetricKey; point: number; baseline: number; movement: string; direction: string };
+
+  // Every metric that appears in the results UI, in both directions. The bug
+  // this guards: a metric where LOWER IS BETTER (Gini, protest risk, inflation,
+  // migration) falling was reported as an "increase" with an up arrow, and the
+  // impact statement then counted the improvement as adverse.
+  const cases: Case[] = [
+    { metric: "gini", point: 44, baseline: 50, movement: "decrease", direction: "improving" },
+    { metric: "gini", point: 56, baseline: 50, movement: "increase", direction: "adverse" },
+    { metric: "protestRisk", point: 47, baseline: 50, movement: "decrease", direction: "improving" },
+    { metric: "protestRisk", point: 53, baseline: 50, movement: "increase", direction: "adverse" },
+    { metric: "inflationPct", point: 53, baseline: 50, movement: "increase", direction: "adverse" },
+    { metric: "inflationPct", point: 47, baseline: 50, movement: "decrease", direction: "improving" },
+    { metric: "migrationOutflowPct", point: 47, baseline: 50, movement: "decrease", direction: "improving" },
+    { metric: "employmentRatePct", point: 52, baseline: 50, movement: "increase", direction: "improving" },
+    { metric: "employmentRatePct", point: 48, baseline: 50, movement: "decrease", direction: "adverse" },
+    { metric: "gdpGrowthPct", point: 52, baseline: 50, movement: "increase", direction: "improving" },
+    { metric: "gdpGrowthPct", point: 48, baseline: 50, movement: "decrease", direction: "adverse" },
+    { metric: "meanIncome", point: 60, baseline: 50, movement: "increase", direction: "improving" },
+    { metric: "wageIndex", point: 40, baseline: 50, movement: "decrease", direction: "adverse" },
+    { metric: "happinessIndex", point: 60, baseline: 50, movement: "increase", direction: "improving" },
+    { metric: "happinessIndex", point: 40, baseline: 50, movement: "decrease", direction: "adverse" },
+  ];
+
+  it.each(cases)("$metric $movement / $direction", ({ metric, point, baseline, movement, direction }) => {
+    const a = assessMetric(fixture({ [metric]: point }, { [metric]: baseline }), metric);
+    // The numeric movement follows the SIGN of the delta, nothing else.
+    expect(a.movement).toBe(movement);
+    expect(Math.sign(a.delta)).toBe(movement === "increase" ? 1 : -1);
+    // Desirability follows LOWER_IS_BETTER, independently of the sign.
+    expect(a.direction).toBe(direction);
+    // The headline must name the numeric direction and must never call an
+    // improvement adverse (or vice versa).
+    expect(a.headline).toContain(movement);
+    if (direction === "adverse") expect(a.headline).toMatch(/adverse/);
+    else expect(a.headline).not.toMatch(/adverse/);
+  });
+
+  it("a falling Gini coefficient is reported as an improvement, never an increase", () => {
+    const a = assessMetric(fixture({ gini: 0.488 }, { gini: 0.5 }), "gini");
+    expect(a.movement).toBe("decrease");
+    expect(a.direction).toBe("improving");
+    expect(a.headline).not.toMatch(/increase/);
+    expect(a.headline).not.toMatch(/adverse/);
+  });
+
+  it("the impact statement counts a falling Gini coefficient as improving, not adverse", () => {
+    // Hold every other metric flat so Gini is the only change.
+    const statement = impactStatement(
+      fixture({ gini: 44, employmentRatePct: 50 }, { gini: 50, employmentRatePct: 50 }),
+      "Falling-inequality policy",
+    );
+    expect(statement).toMatch(/1 metric\(s\) improve/);
+    expect(statement).toMatch(/0 move adversely/);
+    expect(statement).toMatch(/improve most of the reported outcomes/);
+  });
+
+  it("a materiality threshold below the change size does not flip the classification", () => {
+    // Tiny-but-material moves still classify by sign, not by desirability.
+    const a = assessMetric(fixture({ protestRisk: 49.9 }, { protestRisk: 50 }), "protestRisk");
+    expect(a.movement).toBe("decrease");
+    expect(a.direction).toBe("improving");
   });
 });

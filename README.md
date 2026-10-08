@@ -74,6 +74,9 @@ produces an outcome, a magnitude, or a chart series.
   policy cannot produce a national-scheme-scale effect. GGG is deterministic, is **not** an LLM, is
   **not** Differential Evolution/NSGA-II and is **not** backtesting, and it never copies a historical
   outcome into a result. See [`docs/GGG.md`](./docs/GGG.md).
+  The scale enters the network through one reviewed seam (`groundedPolicyBands`), and the network's
+  discrete policy bands mean a weakly grounded local policy saturates at the lowest band — a stated
+  **resolution limit**, documented in `docs/GGG.md`, not hidden.
 - **Honest uncertainty wording** — the seed ensemble is reported as an empirical *share of simulated
   seed runs* and an *empirical seed interval*, never as a probability, confidence level or
   calibrated likelihood.

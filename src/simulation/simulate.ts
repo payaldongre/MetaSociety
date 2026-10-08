@@ -241,6 +241,48 @@ function bandFor(value: number, lowCut: number, highCut: number): "low" | "mediu
   return value < lowCut ? "low" : value < highCut ? "medium" : "high";
 }
 
+/**
+ * The policy bands the Bayesian network ACTUALLY reads — the single seam through
+ * which GGG's grounded effect scale enters the causal network.
+ *
+ * `appliedIntensity` is this period's own ramped, budget-scaled intensity
+ * (0..1). `effectScale` is GGG's historical-comparability grounding (ggg.ts).
+ * Both the intensity band and the budget-share band are reduced in step with the
+ * grounding, so a weakly comparable local application of a larger historical
+ * mechanism reads as a low-intensity, low-budget SCENARIO. This is the fix for
+ * the original defect, where a policy's raw intensity/budget reached the network
+ * at full strength and a ₹12-crore town programme produced a national-scale
+ * headline. Both execution paths (direct engine and the Web Worker, which calls
+ * the same `runSimulation`) go through here, so they cannot diverge.
+ *
+ * STATED LIMITATION (a resolution limit, not a calibrated finding). The network
+ * is discrete — low/medium/high — so once the grounded value drops below the
+ * "medium" cut-off the band saturates: two different weakly grounded policies
+ * (say effect scales 0.10 and 0.35) map onto the same "low/low" policy state, and
+ * the policy's own intensity and budget stop changing that state. The grounding
+ * therefore bounds the modelled effect conservatively but does not resolve
+ * differences *within* the weak-grounding regime. Fixing that would need a
+ * higher-resolution (or continuous) policy dimension in the network, which is
+ * deliberately NOT attempted here rather than tuned arbitrarily.
+ */
+export interface GroundedPolicyBands {
+  intensityBand: "low" | "medium" | "high";
+  budgetBand: "low" | "medium" | "high";
+  durationBand: "short" | "medium" | "long";
+}
+
+export function groundedPolicyBands(
+  policy: PolicyVector,
+  appliedIntensity: number,
+  effectScale: number,
+): GroundedPolicyBands {
+  return {
+    intensityBand: bandFor(appliedIntensity * effectScale, 0.4, 0.72),
+    budgetBand: bandFor((policy.budget / REFERENCE_BUDGET) * effectScale, 0.25, 0.6),
+    durationBand: policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long",
+  };
+}
+
 function trustBandOf(pop: Population, i: number): string {
   return pop.trustInGov[i] < 0.36 ? "low" : pop.trustInGov[i] < 0.6 ? "medium" : "high";
 }
@@ -319,9 +361,7 @@ function* trajectoryGenerator(
     // policy's own, so the grounding is visible as a separate, labelled input
     // rather than hidden inside the number the evaluator sees.
     const groundedApplied = effectiveApplied * effectScale;
-    const intensityBand = bandFor(groundedApplied, 0.4, 0.72);
-    const budgetBand = bandFor((policy.budget / REFERENCE_BUDGET) * effectScale, 0.25, 0.6);
-    const durationBand = policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long";
+    const { intensityBand, budgetBand, durationBand } = groundedPolicyBands(policy, effectiveApplied, effectScale);
 
     let taxRevenue = 0;
     let transfersAssigned = 0;
@@ -1338,11 +1378,14 @@ function evidenceForAgent(
   bands: Record<string, string>,
   effectScale = 1,
 ): Evidence {
+  // The SAME grounded bands the period loop feeds the network, so the causal
+  // attribution explains the scenario that actually ran.
+  const { intensityBand, budgetBand, durationBand } = groundedPolicyBands(policy, policy.intensity, effectScale);
   return {
     PolicyType: engineInstrumentFor(policy.channelIds),
-    PolicyIntensity: bandFor(policy.intensity * effectScale, 0.4, 0.72),
-    PolicyBudgetShare: bandFor((policy.budget / REFERENCE_BUDGET) * effectScale, 0.25, 0.6),
-    PolicyDuration: policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long",
+    PolicyIntensity: intensityBand,
+    PolicyBudgetShare: budgetBand,
+    PolicyDuration: durationBand,
     IncomeClassPrior: INCOME_CLASSES[pop.incomeClass[i]],
     AgeBand: AGE_BANDS[pop.ageBand[i]],
     EducationLevel: EDUCATION_LEVELS[pop.education[i]],

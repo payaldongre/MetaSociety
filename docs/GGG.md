@@ -155,6 +155,31 @@ than hidden inside a number.
 This is a structural grounding of a causal parameter — **not** an output cap.
 There is no `if (gdp > X) gdp = X` anywhere.
 
+### The exact seam, and its stated resolution limit
+
+The scale reaches the network through **one** function,
+`groundedPolicyBands(policy, appliedIntensity, effectScale)` in
+`src/simulation/simulate.ts` (the direct engine and the Web Worker both call
+`runSimulation`, so they cannot diverge). It returns the three bands the network
+reads:
+
+- `intensityBand` = band(`appliedIntensity × effectScale`, low/medium at 0.4/0.72)
+- `budgetBand`   = band(`budget/₹20cr × effectScale`, low/medium at 0.25/0.6)
+- `durationBand` = short / medium / long from the policy's own duration
+
+The last one is deliberately **not** grounded away: duration is the policy's own
+design input.
+
+**Resolution limit (a limitation, not a calibrated finding).** The network's
+policy dimensions are discrete (low/medium/high), so once the grounded value
+falls below the "medium" cut-off the band saturates. For a grounded effect scale
+below roughly 0.4 *every* local policy maps onto the same "low/low" policy state,
+and neither its own intensity nor its budget changes that state. The grounding
+therefore bounds the modelled effect conservatively but does **not** resolve
+differences *within* the weak-grounding regime. Correcting that would require a
+higher-resolution (or continuous) policy dimension in the network; it is left
+explicitly unfixed here rather than tuned arbitrarily, and it is uncalibrated.
+
 ## GGG lineage
 
 Every run retains the full chain:
