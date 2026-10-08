@@ -61,6 +61,7 @@ import { applySeasonalPressure, buildSeasonalProfile, type SeasonalProfile } fro
 import { clonePopulation, generatePopulation, validatePopulation } from "./population";
 import { PolicyFeasibilityError, validatePolicyBrief } from "./policy-brief";
 import { clamp, clamp01, createRng, fnv1a, type Rng } from "./rng";
+import { runGgg, type GggInheritance } from "./ggg";
 import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, METRIC_KEYS, QUALITY_LEVELS, ZONES } from "./types";
 import type {
   DecisionEngine,
@@ -268,6 +269,8 @@ function* trajectoryGenerator(
   baselineGdpLevel: number,
   spec: PeriodSpec,
   rng: Rng,
+  /** GGG grounded effect scale applied to the modelled policy shift. */
+  effectScale: number,
   onPeriod?: (fraction: number) => void,
 ): Generator<DecisionRequest, TrajectoryOutcome, DecisionResponse> {
   const states = new Int32Array(c.ids.length);
@@ -309,8 +312,15 @@ function* trajectoryGenerator(
     const effectiveApplied = applied * budgetScale;
     cumulativeSpend += budgetThisPeriod;
 
-    const intensityBand = bandFor(effectiveApplied, 0.4, 0.72);
-    const budgetBand = bandFor(policy.budget / REFERENCE_BUDGET, 0.25, 0.6);
+    // GGG grounding (ggg.ts): the causal network reads the policy intensity and
+    // budget share SCALED by the historical-comparability effect scale, so a
+    // small local application of a larger mechanism cannot produce the larger
+    // mechanism's effect. The applied intensity reported to the UI stays the
+    // policy's own, so the grounding is visible as a separate, labelled input
+    // rather than hidden inside the number the evaluator sees.
+    const groundedApplied = effectiveApplied * effectScale;
+    const intensityBand = bandFor(groundedApplied, 0.4, 0.72);
+    const budgetBand = bandFor((policy.budget / REFERENCE_BUDGET) * effectScale, 0.25, 0.6);
     const durationBand = policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long";
 
     let taxRevenue = 0;
@@ -363,7 +373,7 @@ function* trajectoryGenerator(
       pop.outputState[i] = sampledOutput as number;
       pop.skillRelevance[i] = clamp01([0.35, 0.62, 0.88][sampledSkill] ?? pop.skillRelevance[i]);
 
-      if (pop.employed[i] && sampledSector !== undefined && rng.next() < 0.12 * effectiveApplied) {
+      if (pop.employed[i] && sampledSector !== undefined && rng.next() < 0.12 * groundedApplied) {
         pop.sector[i] = sampledSector as number;
       }
 
@@ -376,7 +386,7 @@ function* trajectoryGenerator(
         const policyEffect =
           1 +
           (family === "subsidy" || family === "labor" ? 0.035 : 0.012) *
-            effectiveApplied *
+            groundedApplied *
             reach *
             (1 + policy.allocation.employment * 0.6 + policy.allocation.education * 0.3);
         pop.income[i] = base * (0.985 + rng.next() * 0.03) * policyEffect;
@@ -391,7 +401,7 @@ function* trajectoryGenerator(
       // stock a household can absorb. (ASSUMPTION.)
       const policySavings =
         ((family === "subsidy" ? 0.05 : 0) + policy.allocation.education * 0.03) *
-        effectiveApplied *
+        groundedApplied *
         reach;
       pop.savingsMonths[i] = clamp(
         pop.savingsMonths[i] + credit * 0.06 * spec.monthsEach + policySavings * spec.monthsEach * 0.1,
@@ -498,7 +508,7 @@ function* trajectoryGenerator(
       // Durable housing improvement, gated by its long lag.
       if (
         policy.allocation.housing > 0.3 &&
-        effectiveApplied > 0.45 &&
+        groundedApplied > 0.45 &&
         rng.next() < 0.02 * policy.allocation.housing * spec.monthsEach
       ) {
         pop.housing[i] = Math.min(2, pop.housing[i] + 1);
@@ -842,6 +852,15 @@ export async function runSimulation(
   // Enforce the policy-brief feasibility gate before anything else runs.
   const policy = resolvePolicy(request);
 
+  /* 0. GGG — historical-policy inheritance. Pure, deterministic and inspectable:
+     the policy genome, its historical parents, the inherited traits, the
+     Pandharpur adaptation and the grounded effect scale that the causal engine
+     below actually uses. Runs BEFORE the simulation so historical evidence
+     influences the policy characteristics, not merely the description of them. */
+  onProgress({ phase: "Selecting historical evidence (GGG)", fraction: 0.02 });
+  const grounding: GggInheritance = runGgg(policy, request.policyBrief);
+  const effectScale = grounding.grounded.effectScale;
+
   /* 1. Population and network */
   const base = options.population ?? getPopulation();
   onProgress({
@@ -909,6 +928,7 @@ export async function runSimulation(
       0,
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed ^ 0x1a2b3c),
+      1,
     ),
   );
   const baselineGdp = baselineOutcome.finalLevel.gdpLevel || 1;
@@ -944,6 +964,7 @@ export async function runSimulation(
           baselineGdp,
           searchSpec,
           createRng(request.seed ^ 0xd0e5),
+          effectScale,
         ),
       );
       return objectivesFor(outcome.finalLevel, baselineGdp);
@@ -959,7 +980,12 @@ export async function runSimulation(
       seed: request.seed ^ 0x5e7c,
       // Part C: seed the pool with this lineage's own history (best-first), so
       // crossover/mutation inherit within the lineage, not across instruments.
-      initialPopulation: options.lineageSeeds,
+      // GGG adds one historically grounded seed at the grounded effect scale, so
+      // the search starts from the evidence-informed point as well as history.
+      initialPopulation: [
+        encodePolicy({ ...policy, intensity: clamp01(policy.intensity * effectScale) }),
+        ...(options.lineageSeeds ?? []),
+      ],
       stagnationLimit: 12,
       maxEvaluations: (dePop + 1) * deGens,
       onGeneration: (point, front) => {
@@ -1002,6 +1028,7 @@ export async function runSimulation(
       baselineGdp,
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed),
+      effectScale,
       (fraction) =>
         onProgress({
           phase: "Running the full population trajectory",
@@ -1034,6 +1061,7 @@ export async function runSimulation(
         baselineGdp,
         { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
         createRng(request.seed ^ (0x1000 + round)),
+        effectScale,
       ),
     );
     const m = adjustSeasonal(withGrowth(outcome.finalLevel, baselineGdp), policyPressure);
@@ -1147,7 +1175,7 @@ export async function runSimulation(
   const causalAttributionFactors = causalAttribution(
     c,
     "EmploymentStatus",
-    evidenceForAgent(treatedPop, 0, policy, treatmentBands),
+    evidenceForAgent(treatedPop, 0, policy, treatmentBands, effectScale),
     2500,
     createRng(request.seed ^ 0xcafe),
   );
@@ -1189,6 +1217,12 @@ export async function runSimulation(
   if (policy.budget > REFERENCE_BUDGET) {
     warnings.push("Requested budget exceeds the reference envelope and was clamped.");
   }
+  for (const note of grounding.notes) warnings.push(note);
+  warnings.push(
+    `GGG grounded effect scale ${effectScale.toFixed(3)} applied (parents: ${
+      grounding.parents.length > 0 ? grounding.parents.map((p) => p.name).join("; ") : "none selected"
+    }). The causal network read the grounded intensity and budget bands, not the raw ones.`,
+  );
 
   const runId = fnv1a(
     [
@@ -1200,6 +1234,7 @@ export async function runSimulation(
       request.seed,
       BN_VERSION,
       base.manifest,
+      effectScale.toFixed(5),
     ].join("|"),
   );
 
@@ -1238,6 +1273,7 @@ export async function runSimulation(
     decisionStats: engine.stats(),
     validation: validationChecks(base, c),
     warnings,
+    ggg: grounding,
     seasonality: {
       policyCarriesPilgrimage: policySeasonal.exposure !== "none",
       exposure: policySeasonal.exposure,
@@ -1300,11 +1336,12 @@ function evidenceForAgent(
   i: number,
   policy: PolicyVector,
   bands: Record<string, string>,
+  effectScale = 1,
 ): Evidence {
   return {
     PolicyType: engineInstrumentFor(policy.channelIds),
-    PolicyIntensity: bandFor(policy.intensity, 0.4, 0.72),
-    PolicyBudgetShare: bandFor(policy.budget / REFERENCE_BUDGET, 0.25, 0.6),
+    PolicyIntensity: bandFor(policy.intensity * effectScale, 0.4, 0.72),
+    PolicyBudgetShare: bandFor((policy.budget / REFERENCE_BUDGET) * effectScale, 0.25, 0.6),
     PolicyDuration: policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long",
     IncomeClassPrior: INCOME_CLASSES[pop.incomeClass[i]],
     AgeBand: AGE_BANDS[pop.ageBand[i]],

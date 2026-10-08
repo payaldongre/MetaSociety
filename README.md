@@ -7,7 +7,7 @@
 
 - Based on this, the system suggests suitable policies along with expected outcomes and risks.
 
-- These policies can then be tested in the Simulation Lab, where a virtual town of agent-citizens responds to each decision. Response directions are checked on every run; **magnitudes are not yet calibrated** against an evaluated real programme.
+- These policies can then be tested in the Simulation Lab, where a virtual town of agent-citizens responds to each decision. Response directions are checked on every run, and **GGG grounds each policy's effect against real historical predecessors**; magnitudes remain model assumptions and are **not calibrated** against an evaluated programme.
 
 - The platform then shows the economic and social impact, including key metrics, risk alerts, and comparisons between different scenarios.
 
@@ -67,20 +67,29 @@ produces an outcome, a magnitude, or a chart series.
   an honest status — supported / partially supported / directionally consistent / inconclusive /
   not representable / insufficient evidence — and a direction-only agreement is never presented as
   an accurate prediction. A case the engine cannot represent says so rather than inventing one.
+- **GGG historical-policy inheritance** — before a policy is simulated, GGG converts it into a
+  policy genome, matches it to real predecessor programmes by mechanism/channel/pathway similarity,
+  inherits their historically meaningful characteristics conservatively, adapts them to Pandharpur,
+  and derives a **grounded effect scale** that the causal network actually uses — so a small local
+  policy cannot produce a national-scheme-scale effect. GGG is deterministic, is **not** an LLM, is
+  **not** Differential Evolution/NSGA-II and is **not** backtesting, and it never copies a historical
+  outcome into a result. See [`docs/GGG.md`](./docs/GGG.md).
 - **Honest uncertainty wording** — the seed ensemble is reported as an empirical *share of simulated
   seed runs* and an *empirical seed interval*, never as a probability, confidence level or
   calibrated likelihood.
 
 ```bash
-bun run test     # 135 tests: population, network directions, identities, determinism, search, zones,
+bun run test     # 160 tests: population, network directions, identities, determinism, search, zones,
                  # policy-brief/governance gating, Wari seasonality, engine-backed backtesting,
-                 # spec definition-of-done, and page/persistence wiring
+                 # GGG historical inheritance, magnitude plausibility, spec definition-of-done,
+                 # and page/persistence wiring
                  # two vitest projects (app / simulation) — see vitest.config.ts; the engine suite is CPU-heavy
 bun run dev      # app; the Simulation Lab page renders engine output, not mock data
 ```
 
 The full specification, the reasoning behind each decision, and the verified-data build spec are
-in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). The engine's acceptance tests live in
+in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). GGG (historical-policy inheritance) is
+documented in [`docs/GGG.md`](./docs/GGG.md). The engine's acceptance tests live in
 `src/simulation/__tests__/engine.test.ts`, with the build spec's definition-of-done checks in
 `src/simulation/__tests__/spec-dod.test.ts` and the de-mocked page/persistence wiring checks in
 `src/test/dataWiring.test.ts`. Real town datasets come from `src/lib/townData.ts`. The canonical
@@ -111,7 +120,7 @@ npm install                   # fallback: no Bun required (~586 packages)
 bunx tsc -b --noEmit
 
 # 4. Run the test suite
-bun run test                  # 135 tests, ~2–3 min
+bun run test                  # 160 tests, ~3–4 min
 npm test                      # same thing without Bun
 
 # 5. Start the app
@@ -123,10 +132,10 @@ bun run build && bun run preview
 
 ### Notes that matter
 
-- **Let the tests run alone.** The Simulation Lab suite rolls a full 98,923-agent trajectory.
-  `vitest.config.ts` pins it to a single forked worker with a 300-second timeout; running it
-  alongside a dev server or other CPU-heavy work can starve Vitest's worker heartbeat and make a
-  passing suite exit non-zero. Expect roughly a minute. That cost is the engine actually
+- **Let the tests run alone.** The Simulation Lab suite rolls many full 98,923-agent trajectories.
+  `vitest.config.ts` pins the simulation project to a single worker **thread** with a 300-second
+  timeout; running it alongside a dev server or other CPU-heavy work can starve Vitest's worker
+  heartbeat and slow the run down. Expect a few minutes. That cost is the engine actually
   simulating citizens, not a hang.
 - **The build prints one advisory warning, not an error.** The main bundle is ~1.16 MB (~331 KB
   gzipped), above Vite's 500 KB advisory threshold. Nothing is broken; code-splitting is future

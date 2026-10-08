@@ -102,6 +102,7 @@ import {
 import { listRuns, saveRun, type SavedRun } from "@/lib/runStore";
 import { PolicyBriefPanel } from "@/components/PolicyBriefPanel";
 import { HistoricalBacktestPanel } from "@/components/HistoricalBacktestPanel";
+import { GggPanel } from "@/components/GggPanel";
 import { assessMetric, impactStatement, reproducibilityInfo, seedEnsembleWording, uncertaintyNarrative } from "@/simulation";
 
 /* ------------------------------------------------------------------ */
@@ -141,7 +142,7 @@ const MODEL_LIMITATIONS: string[] = [
   "Zone figures are reported after the run as a partition of surviving agents, so migration outflow reduces the reported zone population.",
   "Inflation is reported from a three-value band (2.4% / 4.1% / 6.8%) computed from aggregate demand, so it can only take those three values. Treat it as an ordinal band, not a point forecast.",
   "Allocation is normalised across housing / education / employment: the employment slice scales earnings, the education slice scales skills and savings, and the housing slice scales dwelling upgrades and trust. These weights are design assumptions, not calibrated estimates.",
-  "Instrument effects are not calibrated: a 12 crore subsidy at high intensity currently moves employment far more than any comparable real scheme, because the network's employment response is an uncalibrated prior shift applied every period.",
+  "Instrument effects are grounded but not calibrated: GGG scales a local policy's modelled effect by how comparable its historical predecessors are and how strong their evidence is, so a ₹12-crore programme no longer moves employment like a national scheme. The underlying magnitudes remain model assumptions, not estimates calibrated against an evaluated programme.",
 ];
 
 /**
@@ -919,6 +920,8 @@ export default function SimulationLab() {
                   </p>
                 </CardContent>
               </Card>
+
+              {result.ggg && <GggPanel ggg={result.ggg} />}
 
               {resultsStale && (
                 <Card className="animate-fade-up border-warning/40 bg-warning/5">

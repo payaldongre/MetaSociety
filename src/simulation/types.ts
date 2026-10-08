@@ -8,6 +8,7 @@
  */
 
 import type { PolicyBrief } from "./policy-brief";
+import type { GggInheritance } from "./ggg";
 
 /* ------------------------------------------------------------------ */
 /* Spatial + demographic vocabularies                                  */
@@ -432,6 +433,14 @@ export interface SimulationResult {
   decisionStats: DecisionStats;
   validation: ValidationCheck[];
   warnings: string[];
+
+  /**
+   * GGG historical-policy inheritance (ggg.ts). Present for every run: the
+   * parents selected, the traits inherited, the Pandharpur adaptation, the
+   * grounded effect scale that actually scaled the modelled policy shift, and
+   * the full lineage from predecessor to simulation.
+   */
+  ggg?: GggInheritance;
 
   /**
    * Wari seasonal pressure report (redesign spec §12). Present for every run, so

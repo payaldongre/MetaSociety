@@ -242,3 +242,49 @@ export {
   type ReproducibilityInfo,
   type UncertaintyNarrative,
 } from "./impact";
+
+/* --- GGG: historical-policy inheritance --- */
+export {
+  HISTORICAL_CONTEXTS,
+  HISTORICAL_POLICIES,
+  HISTORICAL_REGISTRY_REVIEWED_ON,
+  HISTORICAL_SCALES,
+  historicalPoliciesForChannels,
+  historicalPolicyById,
+  type HistoricalContext,
+  type HistoricalOutcome,
+  type HistoricalPolicy,
+  type HistoricalScale,
+  type OutcomeDirection,
+} from "./historical-policies";
+export {
+  CHANNEL_GENOME_PROFILE,
+  genomeFromPolicy,
+  hasGenomeProfile,
+  type GenomeContext,
+  type GenomeScale,
+  type GenomeSeasonality,
+  type PolicyGenome,
+  type ResourceBand,
+} from "./policy-genome";
+export {
+  MAX_PARENTS,
+  MIN_EFFECT_SCALE,
+  MIN_PARENT_SCORE,
+  NO_PARENT_COMPARABILITY,
+  PANDHARPUR_CONTEXT,
+  SIMILARITY_WEIGHTS,
+  groundedParameters,
+  inheritTraits,
+  matchHistoricalParents,
+  parentEngineMetrics,
+  runGgg,
+  similarityTo,
+  type AdaptationNote,
+  type GggInheritance,
+  type GggLineageStep,
+  type GroundedParameters,
+  type InheritedTrait,
+  type ParentMatch,
+  type SimilarityBreakdown,
+} from "./ggg";
