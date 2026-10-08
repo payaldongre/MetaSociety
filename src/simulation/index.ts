@@ -288,3 +288,11 @@ export {
   type ParentMatch,
   type SimilarityBreakdown,
 } from "./ggg";
+export { runSimulationInWorker, type WorkerRunHandle, type WorkerRunOptions } from "./worker-client";
+export { runSimulationJob, type SimulationJobOptions } from "./worker-job";
+export type {
+  SimulationProgress,
+  WorkerJobOptions,
+  WorkerRequest,
+  WorkerResponse,
+} from "./worker-protocol";

@@ -78,7 +78,6 @@ import {
   briefToPolicyVector,
   channelDomainsFor,
   channelsUseAllocation,
-  createDecisionEngine,
   createDefaultBrief,
   describeLineageKey,
   directTargetsFor,
@@ -87,7 +86,7 @@ import {
   lineageKeyFor,
   pendingChannelNodes,
   populationComposition,
-  runSimulation,
+  runSimulationInWorker,
   selectedChannels,
   validatePolicyBrief,
   type ChannelDefinition,
@@ -339,6 +338,8 @@ export default function SimulationLab() {
   const [activeMetric, setActiveMetric] = useState<MetricKey>("gdpGrowthPct");
   const [saving, setSaving] = useState(false);
   const runToken = useRef(0);
+  // Active worker run; a new run cancels the previous one so stale runs stop.
+  const activeWorker = useRef<(() => void) | null>(null);
   const lastPolicyRef = useRef<PolicyVector | null>(null);
 
   /* --- population summary (loaded after first paint: 98,923 agents) --- */
@@ -426,9 +427,14 @@ export default function SimulationLab() {
     // client bundle and shipped to every visitor. The proxy holds the provider
     // secret and injects it; the browser only ever sees the proxy URL.
     const remoteEndpoint = (import.meta.env.VITE_DECISION_ENDPOINT as string | undefined) ?? undefined;
-    const decisionEngine = createDecisionEngine(engineKind, remoteEndpoint ? { endpoint: remoteEndpoint } : {});
 
-    // Let the spinner paint before the (synchronous, CPU-bound) engine starts.
+    // Stop any still-running previous worker before starting a new one. Its
+    // promise rejects with "Simulation cancelled", but its token is already
+    // stale, so its catch/finally cannot touch the current run's state.
+    activeWorker.current?.();
+    activeWorker.current = null;
+
+    // Let the spinner paint before the (now off-thread, CPU-bound) engine starts.
     await new Promise((resolve) => window.setTimeout(resolve, 30));
 
     try {
@@ -465,7 +471,10 @@ export default function SimulationLab() {
         .sort((a, b) => b.effectivenessScore - a.effectivenessScore);
       const lineageSeeds = history.slice(0, 8).map((r) => encodePolicy(r.policy));
 
-      const res = await runSimulation(
+      // Run the SAME engine path off the main thread. The worker generates the
+      // identical census-anchored population itself and calls `runSimulation`
+      // with this request, so the result matches a direct call exactly.
+      const handle = runSimulationInWorker(
         {
           townId: "pandharpur_in_mh",
           policy,
@@ -478,13 +487,17 @@ export default function SimulationLab() {
           zoneFilter: "all",
         },
         {
-          decisionEngine,
+          engineKind,
+          remoteEndpoint,
           lineageSeeds,
           onProgress: (p) => {
             if (runToken.current === token) setProgress(p);
           },
         },
       );
+      activeWorker.current = handle.cancel;
+      const res = await handle.promise;
+      activeWorker.current = null;
       if (runToken.current !== token) return;
       setResult(res);
       setRanSignature(configSignature);
@@ -501,6 +514,7 @@ export default function SimulationLab() {
       toast.error("Simulation failed", { description: message });
     } finally {
       if (runToken.current === token) {
+        activeWorker.current = null;
         setRunning(false);
         setProgress(null);
       }
