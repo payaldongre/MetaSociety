@@ -33,7 +33,8 @@ produces an outcome, a magnitude, or a chart series.
   households, children 0–6, SC/ST share, literacy by gender and worker counts by gender). The
   Census fields are verified; income, sector, education and housing are modelled, and
   `src/simulation/census.ts` states which is which field by field.
-- **Bayesian network** — 29 nodes, with conditional probability tables counted from the population
+- **Bayesian network** — 30 nodes (derived from `NODE_REGISTRY`, not hardcoded; a test pins the count so the docs
+  cannot drift), with conditional probability tables counted from the population
   wherever a node is observable, and documented priors elsewhere. Interventions use `do(...)` by
   graph mutilation, so a policy effect is causal rather than a conditional read.
 - **Multi-period** — the network is rolled one period at a time with agent state carried forward
@@ -54,9 +55,25 @@ produces an outcome, a magnitude, or a chart series.
   identities are asserted on every period of every run. A run that does not balance fails loudly.
 - **Evidence pack** — each run re-checks the Census totals, the network's documented response
   directions, the identities and reproducibility, and reports exactly which checks passed.
+- **Policy brief is the authoritative input** — a policy is a structured brief (objective,
+  problem statement, governing authorities, targeted population, budget line items, implementation
+  timeline), not three sliders. Governance competence, budget (line items must equal the stated
+  total exactly) and timeline feasibility are validated, and the gate is **enforced in the engine
+  itself**: `runSimulation` re-runs `validatePolicyBrief` and throws `PolicyFeasibilityError`, so a
+  blocked policy cannot be simulated even if the UI is bypassed. The ₹200M simulation safety limit
+  is labelled a *model assumption*, never a statutory ceiling.
+- **Historical validation (backtest)** — documented Pandharpur cases are replayed through this same
+  engine from pre-policy information only and compared with the observed outcome. Each case reports
+  an honest status — supported / partially supported / directionally consistent / inconclusive /
+  not representable / insufficient evidence — and a direction-only agreement is never presented as
+  an accurate prediction. A case the engine cannot represent says so rather than inventing one.
+- **Honest uncertainty wording** — the seed ensemble is reported as an empirical *share of simulated
+  seed runs* and an *empirical seed interval*, never as a probability, confidence level or
+  calibrated likelihood.
 
 ```bash
-bun run test     # 45 tests: population, network directions, identities, determinism, search, zones,
+bun run test     # 135 tests: population, network directions, identities, determinism, search, zones,
+                 # policy-brief/governance gating, Wari seasonality, engine-backed backtesting,
                  # spec definition-of-done, and page/persistence wiring
                  # two vitest projects (app / simulation) — see vitest.config.ts; the engine suite is CPU-heavy
 bun run dev      # app; the Simulation Lab page renders engine output, not mock data
@@ -66,7 +83,9 @@ The full specification, the reasoning behind each decision, and the verified-dat
 in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). The engine's acceptance tests live in
 `src/simulation/__tests__/engine.test.ts`, with the build spec's definition-of-done checks in
 `src/simulation/__tests__/spec-dod.test.ts` and the de-mocked page/persistence wiring checks in
-`src/test/dataWiring.test.ts`. Real town datasets come from `src/lib/townData.ts`.
+`src/test/dataWiring.test.ts`. Real town datasets come from `src/lib/townData.ts`. The canonical
+population (the in-memory generator) and its relation to the `pandharpur_synthetic_population.csv`
+artifact are documented in [`docs/POPULATION_PROVENANCE.md`](./docs/POPULATION_PROVENANCE.md).
 Saved runs persist to the browser store (and to Supabase when it is configured) via
 `src/lib/runStore.ts`; the Dashboard, Data Intelligence, Alerts and Saved Reports pages read real
 engine/population data, not mock samples.
@@ -92,7 +111,7 @@ npm install                   # fallback: no Bun required (~586 packages)
 bunx tsc -b --noEmit
 
 # 4. Run the test suite
-bun run test                  # 45 tests, ~50-60s
+bun run test                  # 135 tests, ~2–3 min
 npm test                      # same thing without Bun
 
 # 5. Start the app

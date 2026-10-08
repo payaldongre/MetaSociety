@@ -7,6 +7,8 @@
  * No language model produces an outcome, a magnitude, or a narrative.
  */
 
+import type { PolicyBrief } from "./policy-brief";
+
 /* ------------------------------------------------------------------ */
 /* Spatial + demographic vocabularies                                  */
 /* ------------------------------------------------------------------ */
@@ -319,18 +321,22 @@ export interface Interval {
 }
 
 /**
- * Aggregated uncertainty for one metric across many random seeds (SPEC §6.8).
+ * Aggregated uncertainty for one metric across a FIXED ENSEMBLE OF DETERMINISTIC
+ * SEED RUNS (SPEC §6.8, §22).
  *
  * The seed stays the reproducibility mechanism; what changes is what is
  * DISPLAYED. Instead of one arbitrary seed's point value plus a separate range,
- * a run reports a probability-style headline over the seed ensemble.
+ * a run reports an EMPIRICAL SHARE over the seed ensemble. This is deliberately
+ * NOT a probability, a confidence level or a calibrated likelihood: a finite
+ * ensemble of deterministic runs does not yield a statistical probability, and
+ * the field names say so (`improvedShare`, `changedShare`).
  */
 export interface MetricUncertainty {
   seedCount: number;
   /** Share of seeds on which this metric improves against the no-policy baseline. */
-  probabilityImproved: number;
+  improvedShare: number;
   /** Share of seeds on which the metric moves materially in either direction. */
-  probabilityChanged: number;
+  changedShare: number;
   /** Median effect (simulated minus baseline) over the seed ensemble. */
   medianDelta: number;
   p05Delta: number;
@@ -370,6 +376,14 @@ export interface ParetoCandidate {
 export interface SimulationRequest {
   townId: string;
   policy: PolicyVector;
+  /**
+   * Structured policy brief. When present it is AUTHORITATIVE: the engine
+   * re-runs the feasibility gate itself and takes the budget, duration and
+   * channels from the brief. A brief that fails the gate throws before any
+   * simulation runs, so a blocking-invalid policy cannot reach the engine even
+   * if a caller bypasses the UI (spec §7, §26).
+   */
+  policyBrief?: PolicyBrief;
   objectives?: string[];
   mode: "single" | "optimize";
   seed: number;

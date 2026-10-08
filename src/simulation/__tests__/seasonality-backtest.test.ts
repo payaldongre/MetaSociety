@@ -18,7 +18,13 @@ import {
   pilgrimageExposureFor,
   seasonForMonthOfYear,
 } from "@/simulation/seasonality";
-import { BACKTEST_CASES, checkNoLeakage, runBacktest, runBacktestSuite } from "@/simulation/backtest";
+import {
+  BACKTEST_CASES,
+  checkNoLeakage,
+  runBacktest,
+  runBacktestSuite,
+  runEngineBacktestSuite,
+} from "@/simulation/backtest";
 import { CALIBRATION_LEDGER, ledgerSummary } from "@/simulation/calibration-ledger";
 
 describe("Wari calendar", () => {
@@ -187,13 +193,77 @@ describe("historical backtesting (spec §16, §17)", () => {
     }
   });
 
-  it("runs the full suite with a clean leakage check", () => {
+  it("runs the pure comparison harness with a clean leakage check", () => {
     const { results, summary } = runBacktestSuite((c) => ({ direction: c.observedDirection }));
     expect(results.length).toBe(BACKTEST_CASES.length);
     expect(summary.leakageFailures).toBe(0);
     expect(summary.clean).toBe(true);
-    expect(summary.directionAgreements).toBe(results.length);
     // Direction alone must not be reported as successful prediction.
     expect(summary.note).toMatch(/not reported as successful prediction/);
+  });
+
+  it("reports cases the engine cannot represent instead of fabricating a prediction", () => {
+    for (const c of BACKTEST_CASES.filter((x) => x.representation.engine === null)) {
+      const result = runBacktest(c, { direction: "unclear" });
+      expect(result.status).toBe("not_representable");
+      expect(result.note.length).toBeGreaterThan(10);
+      // No engine run exists for a case with no representation.
+      expect(result.engineRun).toBeUndefined();
+    }
+  });
+
+  it(
+    "runs the ACTUAL simulation engine for every representable case and reports honest statuses",
+    async () => {
+      const { results, engineRuns, summary } = await runEngineBacktestSuite({ simulation: { intervalRounds: 1 } });
+
+      // The engine really ran, once per representable case.
+      const representable = BACKTEST_CASES.filter((c) => c.representation.engine !== null);
+      expect(engineRuns.length).toBe(representable.length);
+      expect(engineRuns.length).toBeGreaterThan(0);
+      for (const run of engineRuns) {
+        expect(Number.isFinite(run.baseline)).toBe(true);
+        expect(Number.isFinite(run.treated)).toBe(true);
+        expect(Number.isFinite(run.delta)).toBe(true);
+        expect(run.seedCount).toBeGreaterThanOrEqual(1);
+        expect(run.seedInterval[0]).toBeLessThanOrEqual(run.seedInterval[1]);
+      }
+
+      // Every case carries a real status and an attachable engine run where one exists.
+      expect(summary.notRepresentable).toBe(
+        BACKTEST_CASES.filter((c) => c.representation.engine === null).length,
+      );
+      for (const r of results) {
+        expect(r.status).toBeTruthy();
+        if (r.status === "not_representable") {
+          // Never a fabricated prediction: no engine run backs it.
+          expect(r.engineRun).toBeUndefined();
+        } else {
+          expect(r.engineRun).toBeDefined();
+        }
+      }
+
+      // The engine's labour-market policy raises mean income against the same
+      // engine's no-policy baseline — a real, non-tautological prediction.
+      const labour = results.find((r) => r.caseId === "mgnrega-employment")!;
+      expect(labour.predictedDirection).toBe("increase");
+      expect(labour.directionAgreement).toBe(true);
+      expect(labour.status).toBe("directionally_consistent"); // no comparable observed magnitude
+      expect(labour.directionOnly).toBe(true);
+
+      expect(summary.clean).toBe(true);
+    },
+    300_000,
+  );
+
+  it("keeps post-policy evidence out of the engine inputs", () => {
+    // The engine representation is a fixed policy spec built from pre-policy
+    // information only; no case may carry a post-policy source in its inputs.
+    for (const c of BACKTEST_CASES) {
+      const after = new Set(c.observedAfterImplementation.evidence.map((e) => e.url ?? `${e.title}|${e.date ?? ""}`));
+      for (const before of c.informationAvailableBefore.evidence) {
+        expect(after.has(before.url ?? `${before.title}|${before.date ?? ""}`)).toBe(false);
+      }
+    }
   });
 });

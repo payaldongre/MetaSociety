@@ -160,6 +160,24 @@ export interface PolicyFeasibility {
 }
 
 /**
+ * Thrown when a policy brief fails the feasibility gate. It carries the full
+ * `PolicyFeasibility` so a caller (engine or UI) can show the evaluator-readable
+ * reason instead of a bare message. This is the code-level gate the spec
+ * requires: a blocking-invalid policy must not reach the simulation engine.
+ */
+export class PolicyFeasibilityError extends Error {
+  readonly briefTitle: string;
+  readonly feasibility: PolicyFeasibility;
+  constructor(briefTitle: string, feasibility: PolicyFeasibility) {
+    const reason = feasibility.blockers.length > 0 ? feasibility.blockers.join("; ") : "unknown reason";
+    super(`Policy brief "${briefTitle}" is blocked and cannot reach the simulation engine: ${reason}`);
+    this.name = "PolicyFeasibilityError";
+    this.briefTitle = briefTitle;
+    this.feasibility = feasibility;
+  }
+}
+
+/**
  * Legal basis auto-filled from the verified governance registry (spec §27). The
  * evaluator can see the exact instrument that authorises the deciding body.
  */
@@ -230,11 +248,14 @@ export function validatePolicyBrief(brief: PolicyBrief): PolicyFeasibility {
   }
 
   const hasBlocker = blockers.length > 0;
-  const status: FeasibilityStatus = hasBlocker
+  let status: FeasibilityStatus = hasBlocker
     ? governance.status === "unsupported_by_authority"
       ? "unsupported_by_authority"
       : "conditionally_feasible"
     : governance.status;
+  // No declared domain means competence cannot even be checked — distinguish
+  // that from a policy that is genuinely feasible (spec §7 taxonomy).
+  if (!hasBlocker && brief.domains.length === 0) status = "insufficient_evidence";
 
   return {
     status,
@@ -274,11 +295,7 @@ export function briefToPolicyVector(
   intensity: number,
 ): BriefPolicyMapping {
   const feasibility = validatePolicyBrief(brief);
-  if (!feasibility.simulationReady) {
-    throw new Error(
-      `Policy brief "${brief.title}" is not simulation-ready: ${feasibility.blockers.join("; ")}`,
-    );
-  }
+  if (!feasibility.simulationReady) throw new PolicyFeasibilityError(brief.title, feasibility);
   return {
     channelIds: brief.channelIds,
     name: brief.title,
@@ -308,3 +325,79 @@ export const DOMAIN_LABELS: Record<PolicyDomain, string> = {
 /** Re-export for callers that only need the domain vocabulary. */
 export { POLICY_DOMAINS };
 export { isObserved };
+
+/* ------------------------------------------------------------------ */
+/* Channel -> domain crosswalk, shared by the UI and the defaults      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which policy domain each engine channel belongs to. Kept here (not in the UI)
+ * so the governance competence check, the brief's declared domains and the
+ * default brief all agree by construction. FINANCIAL_INCLUSION sits under
+ * income support because it is a household-credit concern, not a separate
+ * competence.
+ */
+export const CHANNEL_DOMAIN: Record<string, PolicyDomain> = {
+  INCOME_SUPPORT: "income_support",
+  LABOR_MARKET: "labour_market",
+  HOUSING: "housing",
+  EDUCATION_SKILL: "education_skill",
+  HEALTHCARE_ACCESS: "healthcare",
+  TAX_FISCAL: "taxation_fiscal",
+  REGULATION: "regulation",
+  INFRASTRUCTURE: "infrastructure",
+  ENVIRONMENT_CLIMATE: "environment_climate",
+  DIGITAL_ACCESS: "digital_access",
+  FOOD_SECURITY: "food_security",
+  FINANCIAL_INCLUSION: "income_support",
+  PILGRIMAGE_FACILITIES: "pilgrimage_facilities",
+};
+
+/** Domains a set of channels touches, in a stable order. */
+export function channelDomainsFor(channelIds: string[]): PolicyDomain[] {
+  const set = new Set<PolicyDomain>();
+  for (const id of channelIds) {
+    const d = CHANNEL_DOMAIN[id];
+    if (d) set.add(d);
+  }
+  return [...set];
+}
+
+/**
+ * A worked default brief, so the workflow is usable immediately and every field
+ * is a real, editable part of the brief. The default is deliberately a valid
+ * (simulation-ready) configuration: a municipal-council programme funded and
+ * implemented by the council, with line items that sum exactly and a two-year
+ * timeline.
+ */
+export function createDefaultBrief(channelIds: string[], title = "Wari rest-area and sanitation programme"): PolicyBrief {
+  return {
+    id: "draft-brief",
+    title,
+    objective: "Reduce seasonal civic pressure on Pandharpur while protecting resident services.",
+    problemStatement:
+      "Temporary pilgrim load during the Wari strains sanitation, rest areas and crowd management each Ashadhi.",
+    governance: {
+      proposingAuthority: "pandharpur_municipal_council",
+      primaryDecisionAuthority: "pandharpur_municipal_council",
+      approvalAuthorities: [],
+      fundingAuthorities: ["pandharpur_municipal_council"],
+      implementingAuthorities: ["pandharpur_municipal_council"],
+      supportingAuthorities: [],
+    },
+    domains: channelDomainsFor(channelIds),
+    target: { description: "Wari-period population of Pandharpur (transient), residents town-wide" },
+    budgetLineItems: [
+      { label: "Rest areas and shelters", amountInr: 60_000_000 },
+      { label: "Sanitation and waste", amountInr: 30_000_000 },
+      { label: "Crowd management", amountInr: 20_000_000 },
+      { label: "Monitoring and evaluation", amountInr: 10_000_000 },
+    ],
+    statedTotalInr: 120_000_000,
+    phases: [
+      { name: "Preparation", startDate: "2027-01-01", endDate: "2027-12-31", milestone: "Sites and contracts ready" },
+      { name: "Wari operations", startDate: "2028-01-01", endDate: "2028-12-31", milestone: "Two Wari seasons delivered" },
+    ],
+    channelIds,
+  };
+}

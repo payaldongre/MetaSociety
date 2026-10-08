@@ -30,12 +30,15 @@ import {
   getPopulation,
   nonDominatedSort,
   paretoFront,
+  PolicyFeasibilityError,
+  createDefaultBrief,
   runSimulation,
   validateBnDirection,
   validatePopulation,
   withIntervention,
   posteriorDistribution,
   applyEvidence,
+  type PolicyBrief,
   type PolicyVector,
   type SimulationRequest,
 } from "@/simulation";
@@ -362,6 +365,95 @@ describe("decision layer", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Policy-brief feasibility gate in the engine path (spec §7, §26)      */
+/* ------------------------------------------------------------------ */
+
+describe("policy brief gate is enforced by the engine itself", () => {
+  /** A short valid brief: ~6 months of phases, line items equal to the total. */
+  const shortBrief = (channelIds: string[]): PolicyBrief => {
+    const b = createDefaultBrief(channelIds, "Six-month pilot brief");
+    return {
+      ...b,
+      budgetLineItems: [
+        { label: "Delivery", amountInr: 4_000_000 },
+        { label: "Monitoring", amountInr: 2_000_000 },
+      ],
+      statedTotalInr: 6_000_000,
+      phases: [{ name: "Pilot", startDate: "2027-01-01", endDate: "2027-06-30" }],
+    };
+  };
+
+  it("refuses to simulate a brief whose deciding authority is not competent", async () => {
+    const b = shortBrief(["HOUSING"]);
+    const bad: PolicyBrief = {
+      ...b,
+      domains: ["housing"],
+      governance: {
+        ...b.governance,
+        proposingAuthority: "vitthal_rukmini_temples_committee",
+        primaryDecisionAuthority: "vitthal_rukmini_temples_committee",
+        fundingAuthorities: ["vitthal_rukmini_temples_committee"],
+        implementingAuthorities: ["vitthal_rukmini_temples_committee"],
+      },
+    };
+    const err = await runSimulation(request({ policyBrief: bad }), { intervalRounds: 1 }).catch((e) => e);
+    expect(err).toBeInstanceOf(PolicyFeasibilityError);
+    expect(String(err.message)).toMatch(/not competent to decide/);
+  });
+
+  it("refuses to simulate a brief whose line items do not equal the stated total", async () => {
+    const b = shortBrief(["INCOME_SUPPORT"]);
+    const bad: PolicyBrief = { ...b, statedTotalInr: b.statedTotalInr - 1 };
+    await expect(runSimulation(request({ policyBrief: bad }), { intervalRounds: 1 })).rejects.toBeInstanceOf(
+      PolicyFeasibilityError,
+    );
+  });
+
+  it("refuses to simulate a brief whose phases are invalid", async () => {
+    const b = shortBrief(["INCOME_SUPPORT"]);
+    const bad: PolicyBrief = { ...b, phases: [{ name: "Backwards", startDate: "2027-06-01", endDate: "2027-01-01" }] };
+    await expect(runSimulation(request({ policyBrief: bad }), { intervalRounds: 1 })).rejects.toBeInstanceOf(
+      PolicyFeasibilityError,
+    );
+  });
+
+  it(
+    "simulates a valid brief and takes budget/duration/channels from it, not the request",
+    async () => {
+      const b = shortBrief(["INCOME_SUPPORT"]);
+      // The request's own vector is deliberately inconsistent: a 60-month
+      // duration and a ₹1,000 budget. If the brief were ignored, the run would
+      // be 20 periods long and spend almost nothing.
+      const res = await runSimulation(
+        request({
+          policy: policy({ channelIds: ["INCOME_SUPPORT"], durationMonths: 60, budget: 1_000 }),
+          policyBrief: b,
+        }),
+        { intervalRounds: 1 },
+      );
+      expect(res.periods).toBe(2);
+      const spent = res.trajectoryTrace[res.trajectoryTrace.length - 1].cumulativeSpend;
+      expect(spent).toBeGreaterThan(1_000_000);
+      expect(spent).toBeLessThanOrEqual(6_000_000 + 1);
+    },
+    240_000,
+  );
+
+  it(
+    "simulates a valid Pandharpur pilgrimage brief",
+    async () => {
+      const b = shortBrief(["PILGRIMAGE_FACILITIES"]);
+      const res = await runSimulation(request({ policy: policy({ channelIds: ["PILGRIMAGE_FACILITIES"] }), policyBrief: b }), {
+        intervalRounds: 1,
+      });
+      expect(res.validation.filter((v) => !v.passed)).toEqual([]);
+      expect(res.seasonality?.policyCarriesPilgrimage).toBe(true);
+    },
+    240_000,
+  );
+});
+
+/* ------------------------------------------------------------------ */
 /* End-to-end run                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -458,8 +550,8 @@ describe("end-to-end simulation", () => {
         // A real distribution over the ensemble, not a single seed's value
         // presented as a probability.
         expect(u.seedCount).toBeGreaterThan(1);
-        expect(u.probabilityImproved).toBeGreaterThanOrEqual(0);
-        expect(u.probabilityImproved).toBeLessThanOrEqual(1);
+        expect(u.improvedShare).toBeGreaterThanOrEqual(0);
+        expect(u.improvedShare).toBeLessThanOrEqual(1);
         expect(u.p05Delta).toBeLessThanOrEqual(u.medianDelta + 1e-9);
         expect(u.medianDelta).toBeLessThanOrEqual(u.p95Delta + 1e-9);
         // The headline's own single-seed point must be bracketed by the 90% band.

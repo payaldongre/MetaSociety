@@ -236,6 +236,99 @@ describe("policy brief feasibility pipeline (spec §26)", () => {
   });
 });
 
+describe("policy brief feasibility gate blocks every invalid class (spec §7, §26, §27)", () => {
+  const valid: PolicyBrief = {
+    id: "gate-1",
+    title: "General council works programme",
+    objective: "Improve local services",
+    problemStatement: "Local infrastructure and services need investment.",
+    governance: {
+      proposingAuthority: "pandharpur_municipal_council",
+      primaryDecisionAuthority: "pandharpur_municipal_council",
+      approvalAuthorities: [],
+      fundingAuthorities: ["pandharpur_municipal_council"],
+      implementingAuthorities: ["pandharpur_municipal_council"],
+      supportingAuthorities: [],
+    },
+    domains: ["income_support"],
+    target: { description: "Residents town-wide" },
+    budgetLineItems: [
+      { label: "Delivery", amountInr: 60_000_000 },
+      { label: "Monitoring", amountInr: 20_000_000 },
+    ],
+    statedTotalInr: 80_000_000,
+    phases: [{ name: "Delivery", startDate: "2027-01-01", endDate: "2027-12-31" }],
+    channelIds: ["INCOME_SUPPORT"],
+  };
+
+  it("a valid general policy reaches simulation", () => {
+    const f = validatePolicyBrief(valid);
+    expect(f.simulationReady).toBe(true);
+    expect(f.blockers).toEqual([]);
+    expect(f.status).toBe("legally_feasible");
+  });
+
+  it("a valid Pandharpur pilgrimage policy reaches simulation", () => {
+    const f = validatePolicyBrief({
+      ...valid,
+      domains: ["pilgrimage_facilities"],
+      channelIds: ["PILGRIMAGE_FACILITIES"],
+      governance: { ...valid.governance, supportingAuthorities: ["vitthal_rukmini_temples_committee"] },
+    });
+    expect(f.simulationReady).toBe(true);
+    expect(f.blockers).toEqual([]);
+  });
+
+  it("blocks an authority/domain mismatch", () => {
+    const f = validatePolicyBrief({
+      ...valid,
+      domains: ["healthcare"],
+      governance: {
+        ...valid.governance,
+        proposingAuthority: "vitthal_rukmini_temples_committee",
+        primaryDecisionAuthority: "vitthal_rukmini_temples_committee",
+        fundingAuthorities: ["vitthal_rukmini_temples_committee"],
+        implementingAuthorities: ["vitthal_rukmini_temples_committee"],
+      },
+    });
+    expect(f.simulationReady).toBe(false);
+    expect(f.status).toBe("unsupported_by_authority");
+    expect(f.blockers.join(" ")).toMatch(/not competent to decide/);
+  });
+
+  it("blocks a budget whose line items do not equal the stated total", () => {
+    const f = validatePolicyBrief({ ...valid, statedTotalInr: 79_000_000 });
+    expect(f.simulationReady).toBe(false);
+    expect(f.blockers.join(" ")).toMatch(/must equal the total exactly/);
+  });
+
+  it("blocks a malformed budget (negative line item)", () => {
+    const f = validatePolicyBrief({
+      ...valid,
+      budgetLineItems: [{ label: "Broken", amountInr: -1 }],
+      statedTotalInr: -1,
+    });
+    expect(f.simulationReady).toBe(false);
+    expect(f.blockers.join(" ")).toMatch(/malformed/i);
+  });
+
+  it("blocks an invalid implementation timeline", () => {
+    const f = validatePolicyBrief({
+      ...valid,
+      phases: [{ name: "Backwards", startDate: "2027-06-01", endDate: "2027-01-01" }],
+    });
+    expect(f.simulationReady).toBe(false);
+    expect(f.blockers.join(" ")).toMatch(/ends before it starts/);
+  });
+
+  it("reports insufficient evidence when no policy domain is declared", () => {
+    const f = validatePolicyBrief({ ...valid, domains: [] });
+    expect(f.simulationReady).toBe(true); // not blocked...
+    expect(f.status).toBe("insufficient_evidence"); // ...but honestly labelled
+    expect(f.conditions.join(" ")).toMatch(/No policy domain is declared/);
+  });
+});
+
 describe("timeline (spec §27)", () => {
   it("derives a duration from real dates", () => {
     const t = validateTimeline([

@@ -73,11 +73,13 @@ import {
   METRIC_KEYS,
   METRIC_LABELS,
   METRIC_UNITS,
-  REFERENCE_BUDGET,
   TOWN_DISTRICT,
   TOWN_NAME,
+  briefToPolicyVector,
+  channelDomainsFor,
   channelsUseAllocation,
   createDecisionEngine,
+  createDefaultBrief,
   describeLineageKey,
   directTargetsFor,
   encodePolicy,
@@ -87,9 +89,11 @@ import {
   populationComposition,
   runSimulation,
   selectedChannels,
+  validatePolicyBrief,
   type ChannelDefinition,
   type MetricKey,
   type MetricUncertainty,
+  type PolicyBrief,
   type PolicyVector,
   type ProvenanceTag,
   type SimulationResult,
@@ -97,7 +101,8 @@ import {
 } from "@/simulation";
 import { listRuns, saveRun, type SavedRun } from "@/lib/runStore";
 import { PolicyBriefPanel } from "@/components/PolicyBriefPanel";
-import { assessMetric, impactStatement, reproducibilityInfo, uncertaintyNarrative } from "@/simulation";
+import { HistoricalBacktestPanel } from "@/components/HistoricalBacktestPanel";
+import { assessMetric, impactStatement, reproducibilityInfo, seedEnsembleWording, uncertaintyNarrative } from "@/simulation";
 
 /* ------------------------------------------------------------------ */
 /* Formatting                                                          */
@@ -200,9 +205,11 @@ function StatCard({
 }) {
   const delta = value - baseline;
   const Icon = Math.abs(delta) < 1e-9 ? Info : isBetter(metricKey, delta) ? TrendingUp : TrendingDown;
-  const lowers = LOWER_IS_BETTER.includes(metricKey);
-  const improvedPct = Math.round(uncertainty.probabilityImproved * 100);
+  const improvedPct = Math.round(uncertainty.improvedShare * 100);
   const single = uncertainty.seedCount <= 1;
+  // One place owns the honest wording for a seed ensemble: an empirical share
+  // and an empirical seed interval, never a probability or a confidence level.
+  const wording = seedEnsembleWording(uncertainty, metricKey, (v) => fmtDelta(metricKey, v));
   return (
     <div className="rounded-lg border bg-card p-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{METRIC_LABELS[metricKey]}</p>
@@ -210,15 +217,14 @@ function StatCard({
         <span className="text-lg font-semibold text-card-foreground">{fmtMetric(metricKey, value)}</span>
         <Icon className={`h-3.5 w-3.5 ${deltaTone(metricKey, delta)}`} />
       </div>
-      <p className={`text-xs font-medium ${improvedPct >= 50 ? "text-success" : improvedPct > 0 ? "text-warning" : "text-muted-foreground"}`}>
-        {single
-          ? `${fmtDelta(metricKey, delta)} vs no-policy`
-          : `${improvedPct}% probability this policy ${lowers ? "reduces" : "increases"} ${METRIC_LABELS[metricKey].toLowerCase()}`}
+      <p
+        className={`text-xs font-medium ${improvedPct >= 50 ? "text-success" : improvedPct > 0 ? "text-warning" : "text-muted-foreground"}`}
+        title={single ? undefined : wording.shareText}
+      >
+        {single ? `${fmtDelta(metricKey, delta)} vs no-policy` : wording.shareLabel}
       </p>
       <p className="mt-0.5 text-[11px] text-muted-foreground">
-        {single
-          ? "Too few confidence runs to state a probability — raise the confidence-run count"
-          : `Median effect ${fmtDelta(metricKey, uncertainty.medianDelta)} · 90% interval ${fmtDelta(metricKey, uncertainty.p05Delta)} to ${fmtDelta(metricKey, uncertainty.p95Delta)} over ${uncertainty.seedCount} seeds`}
+        {single ? "Only one simulated seed run — no seed-run share or seed interval is reported." : wording.intervalText}
       </p>
     </div>
   );
@@ -287,14 +293,35 @@ function ModelLimitations() {
 export default function SimulationLab() {
   /* --- configuration --- */
   const [channelIds, setChannelIds] = useState<string[]>(["INCOME_SUPPORT"]);
-  const [policyName, setPolicyName] = useState("Pilgrimage-corridor employment subsidy");
+  /**
+   * The structured policy brief is the AUTHORITATIVE policy definition. Its
+   * budget comes from the line items and its duration from the phase dates; the
+   * only numeric controls kept are the intensity and the allocation split, which
+   * the brief does not override.
+   */
+  const [brief, setBrief] = useState<PolicyBrief>(() =>
+    createDefaultBrief(["INCOME_SUPPORT"], "Pilgrimage-corridor employment subsidy"),
+  );
   const [intensityPct, setIntensityPct] = useState([65]);
-  const [budgetCrore, setBudgetCrore] = useState([12]);
-  const [durationMonths, setDurationMonths] = useState([24]);
   const [alloc, setAlloc] = useState<[number[], number[], number[]]>([[30], [40], [30]]);
   const [optimize, setOptimize] = useState(false);
   const [engineKind, setEngineKind] = useState<"rule" | "jev" | "llm">("rule");
   const [seed, setSeed] = useState("20260101");
+  // The channel picker is the UI's way of declaring the brief's channels; keep
+  // the brief's channelIds and derived domains in step so the governance
+  // competence check always runs against what would actually be simulated.
+  useEffect(() => {
+    setBrief((prev) => {
+      if (prev.channelIds.length === channelIds.length && prev.channelIds.every((c, i) => c === channelIds[i])) {
+        return prev;
+      }
+      return { ...prev, channelIds, domains: channelDomainsFor(channelIds) };
+    });
+  }, [channelIds]);
+
+  const feasibility = useMemo(() => validatePolicyBrief(brief), [brief]);
+  const policyName = brief.title;
+
   const selected = useMemo(() => selectedChannels(channelIds), [channelIds]);
   const pendingNodes = useMemo(() => pendingChannelNodes(channelIds), [channelIds]);
   const usesAllocation = channelsUseAllocation(channelIds);
@@ -349,27 +376,15 @@ export default function SimulationLab() {
   const configSignature = useMemo(
     () =>
       JSON.stringify({
+        brief,
         channelIds,
-        policyName,
         intensityPct,
-        budgetCrore,
-        durationMonths,
         alloc,
         optimize,
         engineKind,
         seed,
       }),
-    [
-      alloc,
-      budgetCrore,
-      durationMonths,
-      engineKind,
-      intensityPct,
-      optimize,
-      policyName,
-      channelIds,
-      seed,
-    ],
+    [alloc, brief, channelIds, engineKind, intensityPct, optimize, seed],
   );
 
   // Allocation shares are normalised to sum to 1 before the run; show the
@@ -390,6 +405,18 @@ export default function SimulationLab() {
 
     const parsedSeed = Number.parseInt(seed, 10);
 
+    // Engine-facing gate, mirrored in the UI: a brief that is not simulation-ready
+    // never reaches the engine. `runSimulation` re-checks it too, so this is a
+    // readable pre-flight, not the only line of defence.
+    if (!feasibility.simulationReady) {
+      const message = `The policy brief is blocked and was not simulated: ${feasibility.blockers.join("; ")}`;
+      setFailure(message);
+      toast.error("Policy brief blocked", { description: message });
+      setRunning(false);
+      setProgress(null);
+      return;
+    }
+
     // Remote adapters are optional. Without a configured endpoint the engine
     // falls back to the deterministic rule table and says so in its stats.
     //
@@ -405,17 +432,25 @@ export default function SimulationLab() {
 
     try {
       const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
-      const policy: PolicyVector = {
-        channelIds,
-        name: policyName.trim() || "Untitled policy",
-        intensity: intensityPct[0] / 100,
-        budget: budgetCrore[0] * 1e7,
-        durationMonths: durationMonths[0],
-        allocation: {
+      // The policy vector is DERIVED from the brief: budget = line-item total,
+      // duration = phase span, channels = the brief's own channels. Only the
+      // intensity and the allocation split are the caller's numeric controls.
+      const mapping = briefToPolicyVector(
+        brief,
+        {
           housing: alloc[0][0] / allocTotal,
           education: alloc[1][0] / allocTotal,
           employment: alloc[2][0] / allocTotal,
         },
+        intensityPct[0] / 100,
+      );
+      const policy: PolicyVector = {
+        channelIds: mapping.channelIds,
+        name: mapping.name.trim() || "Untitled policy",
+        intensity: mapping.intensity,
+        budget: mapping.budget,
+        durationMonths: mapping.durationMonths,
+        allocation: mapping.allocation,
       };
       lastPolicyRef.current = policy;
 
@@ -433,6 +468,9 @@ export default function SimulationLab() {
         {
           townId: "pandharpur_in_mh",
           policy,
+          // The brief travels with the request so the engine re-runs the same
+          // feasibility gate rather than trusting the caller.
+          policyBrief: brief,
           mode: optimize ? "optimize" : "single",
           seed: Number.isFinite(parsedSeed) ? parsedSeed : 20260101,
           bnVersion: BN_VERSION,
@@ -466,18 +504,7 @@ export default function SimulationLab() {
         setProgress(null);
       }
     }
-  }, [
-    alloc,
-    budgetCrore,
-    configSignature,
-    durationMonths,
-    engineKind,
-    intensityPct,
-    optimize,
-    policyName,
-    channelIds,
-    seed,
-  ]);
+  }, [alloc, brief, configSignature, engineKind, feasibility, intensityPct, optimize, seed]);
 
   const downloadResult = useCallback(() => {
     if (!result) return;
@@ -586,10 +613,11 @@ export default function SimulationLab() {
               <Label className="text-xs">Policy name</Label>
               <Input
                 className="h-9"
-                value={policyName}
-                onChange={(e) => setPolicyName(e.target.value)}
+                value={brief.title}
+                onChange={(e) => setBrief((prev) => ({ ...prev, title: e.target.value }))}
                 placeholder="e.g. Pilgrimage-corridor employment subsidy"
               />
+              <p className="text-[11px] text-muted-foreground">Stored on the policy brief below.</p>
             </div>
 
             <div className="space-y-1.5">
@@ -646,7 +674,7 @@ export default function SimulationLab() {
               )}
             </div>
 
-            <PolicyBriefPanel channelIds={channelIds} />
+            <PolicyBriefPanel brief={brief} feasibility={feasibility} onChange={setBrief} />
 
             {/* The numeric sliders are DEMOTED into an advanced section (spec §27):
                 the primary workflow is the structured policy brief above, and the
@@ -664,27 +692,19 @@ export default function SimulationLab() {
               <Slider value={intensityPct} onValueChange={setIntensityPct} min={5} max={100} step={5} />
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs">Budget</Label>
-                <span className="text-xs font-medium text-card-foreground">
-                  {fmtInrCrore(budgetCrore[0] * 1e7)}
-                </span>
+            <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/30 p-2.5">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Budget (derived)</p>
+                <p className="text-xs font-medium text-card-foreground">{fmtInrCrore(feasibility.derived.budgetInr)}</p>
               </div>
-              <Slider value={budgetCrore} onValueChange={setBudgetCrore} min={1} max={20} step={0.5} />
-              <p className="text-[11px] text-muted-foreground">
-                Reference budget for banding {fmtInrCrore(REFERENCE_BUDGET)}
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs">Duration</Label>
-                <span className="text-xs font-medium text-card-foreground">{durationMonths[0]} months</span>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Duration (derived)</p>
+                <p className="text-xs font-medium text-card-foreground">
+                  {feasibility.derived.durationMonths} months · {Math.max(1, Math.round(feasibility.derived.durationMonths / 3))} periods
+                </p>
               </div>
-              <Slider value={durationMonths} onValueChange={setDurationMonths} min={3} max={60} step={3} />
-              <p className="text-[11px] text-muted-foreground">
-                {Math.max(1, Math.round(durationMonths[0] / 3))} simulated periods, 3 months each
+              <p className="col-span-2 text-[10px] leading-snug text-muted-foreground">
+                Taken from the brief's line items and phase dates, not typed here. Edit them in the brief above.
               </p>
             </div>
 
@@ -782,7 +802,7 @@ export default function SimulationLab() {
               </p>
             </div>
 
-            <Button className="w-full" onClick={run} disabled={running}>
+            <Button className="w-full" onClick={run} disabled={running || !feasibility.simulationReady}>
               {running ? (
                 <>
                   <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
@@ -795,6 +815,11 @@ export default function SimulationLab() {
                 </>
               )}
             </Button>
+            {!feasibility.simulationReady && (
+              <p className="text-[11px] leading-snug text-destructive">
+                The simulation is blocked until the policy brief passes governance, budget and timeline checks.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -997,9 +1022,9 @@ export default function SimulationLab() {
                       <CardTitle className="text-base">Trajectory · {METRIC_LABELS[activeMetric]}</CardTitle>
                       <p className="text-xs text-muted-foreground">
                         No-policy baseline and simulated path over {result.periods} periods. The range on each card is
-                        the 5th–95th percentile across random seeds at the final period — variation from Monte-Carlo
-                        sampling only, not from model assumptions. The headline is the seed you chose, so it can sit at
-                        either end of that range rather than the middle.
+                        the empirical 5th–95th percentile of the final-period value across the fixed set of simulated
+                        seed runs — variation from Monte-Carlo sampling only, not from model assumptions. The headline
+                        is the ensemble median, so it sits inside that range rather than at one arbitrary seed.
                       </p>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -1768,6 +1793,8 @@ export default function SimulationLab() {
               </div>
             </>
           )}
+
+          <HistoricalBacktestPanel />
 
           <ModelLimitations />
         </div>

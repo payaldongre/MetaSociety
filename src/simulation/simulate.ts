@@ -59,6 +59,7 @@ import { differentialEvolution, randomSearch, type DeBounds } from "./de";
 import { createDecisionEngine } from "./decision";
 import { applySeasonalPressure, buildSeasonalProfile, type SeasonalProfile } from "./seasonality";
 import { clonePopulation, generatePopulation, validatePopulation } from "./population";
+import { PolicyFeasibilityError, validatePolicyBrief } from "./policy-brief";
 import { clamp, clamp01, createRng, fnv1a, type Rng } from "./rng";
 import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, METRIC_KEYS, QUALITY_LEVELS, ZONES } from "./types";
 import type {
@@ -791,6 +792,35 @@ function validationChecks(pop: Population, c: CompiledBn): ValidationCheck[] {
 }
 
 /* ------------------------------------------------------------------ */
+/* Policy brief gate (spec §7, §26)                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Resolve the effective policy vector. When the request carries a structured
+ * policy brief it is AUTHORITATIVE and the feasibility gate is re-run HERE, in
+ * the engine, so a blocking-invalid policy cannot reach the simulation even if
+ * a caller bypasses the UI. Budget, duration and channels then come from the
+ * brief; the caller's intensity and allocation still apply.
+ *
+ * Throws `PolicyFeasibilityError` (carrying the full findings) rather than
+ * silently simulating a policy that governance, budget or timeline rules block.
+ */
+function resolvePolicy(request: SimulationRequest): PolicyVector {
+  if (!request.policyBrief) return request.policy;
+  const feasibility = validatePolicyBrief(request.policyBrief);
+  if (!feasibility.simulationReady) {
+    throw new PolicyFeasibilityError(request.policyBrief.title, feasibility);
+  }
+  return {
+    ...request.policy,
+    channelIds: request.policyBrief.channelIds,
+    name: request.policyBrief.title,
+    budget: feasibility.derived.budgetInr,
+    durationMonths: feasibility.derived.durationMonths,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Public entry point                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -803,6 +833,9 @@ export async function runSimulation(
   engine.reset();
   const onProgress = options.onProgress ?? (() => {});
 
+  // Enforce the policy-brief feasibility gate before anything else runs.
+  const policy = resolvePolicy(request);
+
   /* 1. Population and network */
   const base = options.population ?? getPopulation();
   onProgress({
@@ -812,8 +845,8 @@ export async function runSimulation(
   });
   const c = compileBn(buildBn(base));
 
-  const periods = Math.max(1, Math.round(request.policy.durationMonths / MONTHS_PER_PERIOD));
-  const policyFamily = engineInstrumentFor(request.policy.channelIds);
+  const periods = Math.max(1, Math.round(policy.durationMonths / MONTHS_PER_PERIOD));
+  const policyFamily = engineInstrumentFor(policy.channelIds);
 
   // Wari seasonal pressure (spec §12). Modelled as temporary visitor pressure on
   // top of the resident population, never as extra residents. The baseline gets
@@ -830,8 +863,8 @@ export async function runSimulation(
     periods,
     monthsEach: MONTHS_PER_PERIOD,
     startMonth: SEASONAL_START_MONTH,
-    channelIds: request.policy.channelIds,
-    intensity: request.policy.intensity,
+    channelIds: policy.channelIds,
+    intensity: policy.intensity,
   });
   const baselinePressure = meanCivicPressure(baselineSeasonal);
   const policyPressure = meanCivicPressure(policySeasonal);
@@ -843,7 +876,7 @@ export async function runSimulation(
     name: "Baseline (no policy)",
     intensity: 0,
     budget: 0,
-    durationMonths: request.policy.durationMonths,
+    durationMonths: policy.durationMonths,
     allocation: { housing: 0, education: 0, employment: 0 },
   };
   const baselinePop = clonePopulation(base);
@@ -874,14 +907,14 @@ export async function runSimulation(
     const sampleIndices = Int32Array.from({ length: searchAgents }, () => samplerRng.int(base.size));
     const searchSpec: PeriodSpec = {
       count: Math.min(searchPeriods, periods),
-      monthsEach: Math.max(3, Math.round(request.policy.durationMonths / searchPeriods / 3) * 3),
+      monthsEach: Math.max(3, Math.round(policy.durationMonths / searchPeriods / 3) * 3),
       agents: sampleIndices,
     };
 
     // Search tier: reduced agent sample, coarser periods, and the deterministic
     // decision rule instead of a remote decision engine. Labelled in the UI.
     const fitness = (v: number[]): number[] => {
-      const decoded = decodeVector(v, request.policy.channelIds, request.policy.name);
+      const decoded = decodeVector(v, policy.channelIds, policy.name);
       const outcome = driveSync(
         trajectoryGenerator(
           clonePopulation(base),
@@ -919,7 +952,7 @@ export async function runSimulation(
     });
     deName = de.strategy;
     paretoFront = de.front.slice(0, 8).map((f, idx) => ({
-      params: decodeVector(f.params, request.policy.channelIds, request.policy.name),
+      params: decodeVector(f.params, policy.channelIds, policy.name),
       objectives: Object.fromEntries(OBJECTIVE_LABELS.map((label, i) => [label, f.objectives[i]])),
       selected: idx === 0,
     }));
@@ -944,7 +977,7 @@ export async function runSimulation(
     trajectoryGenerator(
       treatedPop,
       c,
-      request.policy,
+      policy,
       baselineGdp,
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed),
@@ -976,7 +1009,7 @@ export async function runSimulation(
       trajectoryGenerator(
         clonePopulation(base),
         c,
-        request.policy,
+        policy,
         baselineGdp,
         { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
         createRng(request.seed ^ (0x1000 + round)),
@@ -1012,7 +1045,7 @@ export async function runSimulation(
     }),
   ) as Record<MetricKey, number>;
 
-  /* 5b. Uncertainty: a probability-style headline over the seed ensemble. */
+  /* 5b. Uncertainty: an empirical SHARE over the seed ensemble (never a probability). */
   const uncertainty = Object.fromEntries(
     (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
       const deltas = samples.get(k)!.map((v) => v - baselineMetrics[k]);
@@ -1036,8 +1069,8 @@ export async function runSimulation(
         k,
         {
           seedCount: deltas.length,
-          probabilityImproved: deltas.length > 0 ? improved / deltas.length : 0,
-          probabilityChanged: deltas.length > 0 ? changed / deltas.length : 0,
+          improvedShare: deltas.length > 0 ? improved / deltas.length : 0,
+          changedShare: deltas.length > 0 ? changed / deltas.length : 0,
           medianDelta: q(0.5),
           p05Delta: q(0.05),
           p95Delta: q(0.95),
@@ -1093,7 +1126,7 @@ export async function runSimulation(
   const causalAttributionFactors = causalAttribution(
     c,
     "EmploymentStatus",
-    evidenceForAgent(treatedPop, 0, request.policy, treatmentBands),
+    evidenceForAgent(treatedPop, 0, policy, treatmentBands),
     2500,
     createRng(request.seed ^ 0xcafe),
   );
@@ -1123,7 +1156,7 @@ export async function runSimulation(
     gdpSignConsistent,
     inflationComputedBand: treatedOutcome.inflationBand,
     inflationImpliedPct: treatedOutcome.finalLevel.inflationPct,
-    state: describeTownState(treatedPop, request.policy, treatedOutcome.finalLevel, MONTHS_PER_PERIOD, periods * MONTHS_PER_PERIOD),
+    state: describeTownState(treatedPop, policy, treatedOutcome.finalLevel, MONTHS_PER_PERIOD, periods * MONTHS_PER_PERIOD),
     reachability: treatedOutcome.reachability,
   });
 
@@ -1132,7 +1165,7 @@ export async function runSimulation(
       `Only ${(treatedOutcome.reachability * 100).toFixed(0)}% of intended transfers reach citizens: informal employment gates access to the instrument.`,
     );
   }
-  if (request.policy.budget > REFERENCE_BUDGET) {
+  if (policy.budget > REFERENCE_BUDGET) {
     warnings.push("Requested budget exceeds the reference envelope and was clamped.");
   }
 
@@ -1140,9 +1173,9 @@ export async function runSimulation(
     [
       request.townId,
       policyFamily,
-      request.policy.intensity.toFixed(4),
-      request.policy.budget.toFixed(0),
-      request.policy.durationMonths,
+      policy.intensity.toFixed(4),
+      policy.budget.toFixed(0),
+      policy.durationMonths,
       request.seed,
       BN_VERSION,
       base.manifest,
@@ -1159,7 +1192,7 @@ export async function runSimulation(
     point: headlineMetrics,
     intervals,
     uncertainty,
-    lineageKey: lineageKeyFor(request.policy),
+    lineageKey: lineageKeyFor(policy),
     byZone,
     baseline: baselineMetrics,
     trajectories,
@@ -1176,7 +1209,7 @@ export async function runSimulation(
       period: i,
       month: (i + 1) * MONTHS_PER_PERIOD,
       metrics: withGrowth(level, baselineGdp),
-      appliedIntensity: rampFor(request.policy.channelIds, (i + 1) * MONTHS_PER_PERIOD, request.policy.intensity),
+      appliedIntensity: rampFor(policy.channelIds, (i + 1) * MONTHS_PER_PERIOD, policy.intensity),
       cumulativeSpend: level.cumulativeSpend,
     })),
     alerts: treatedOutcome.alerts,

@@ -5,7 +5,14 @@
 
 import { describe, expect, it } from "vitest";
 
-import { assessMetric, impactStatement, magnitudeCalibrationFor, reproducibilityInfo, uncertaintyNarrative } from "@/simulation/impact";
+import {
+  assessMetric,
+  impactStatement,
+  magnitudeCalibrationFor,
+  reproducibilityInfo,
+  seedEnsembleWording,
+  uncertaintyNarrative,
+} from "@/simulation/impact";
 import type { MetricKey, SimulationResult } from "@/simulation/types";
 
 const METRICS: MetricKey[] = [
@@ -26,7 +33,7 @@ function fixture(overrides: Partial<Record<MetricKey, number>> = {}): Simulation
   const uncertainty = Object.fromEntries(
     METRICS.map((m) => [
       m,
-      { seedCount: 12, probabilityImproved: 0.92, probabilityChanged: 0.9, medianDelta: 1, p05Delta: -0.2, p95Delta: 2.2 },
+      { seedCount: 12, improvedShare: 0.92, changedShare: 0.9, medianDelta: 1, p05Delta: -0.2, p95Delta: 2.2 },
     ]),
   ) as SimulationResult["uncertainty"];
   return {
@@ -86,6 +93,46 @@ describe("uncertainty narrative (spec §20)", () => {
     expect(n.model).toMatch(/not calibrated/);
     expect(n.evidence).toMatch(/directions are validated/);
     expect(n.summary).toMatch(/uncertain magnitude/);
+  });
+});
+
+describe("seed-ensemble wording is never presented as a probability (spec §6, §22)", () => {
+  const fixtures = {
+    spread: { seedCount: 12, improvedShare: 0.92, changedShare: 0.9, medianDelta: 1, p05Delta: -0.2, p95Delta: 2.2 },
+    single: { seedCount: 1, improvedShare: 1, changedShare: 1, medianDelta: 0, p05Delta: 0, p95Delta: 0 },
+  };
+
+  it("names the denominator, disclaims probability, and makes no affirmative probability claim", () => {
+    for (const [name, u] of Object.entries(fixtures)) {
+      for (const metric of ["employmentRatePct", "protestRisk"] as MetricKey[]) {
+        const w = seedEnsembleWording(u, metric, (v) => String(v));
+        const text = `${w.shareLabel} ${w.shareText} ${w.intervalText}`;
+        // No affirmative probability / confidence / accuracy claim.
+        expect(text, `${name}/${metric}`).not.toMatch(/\d+% probability/i);
+        expect(text, `${name}/${metric}`).not.toMatch(/probability (that|this|the) (policy|scheme)/i);
+        expect(text, `${name}/${metric}`).not.toMatch(/confidence level|90% interval|calibrated likelihood|accurate prediction/i);
+        // The ensemble is described for what it is: deterministic seed runs.
+        expect(text).toMatch(/seed run/i);
+      }
+    }
+    // And it explicitly disclaims probability for the multi-run case.
+    const w = seedEnsembleWording(fixtures.spread, "employmentRatePct", (v) => String(v));
+    expect(w.shareText).toMatch(/not a probability/i);
+    expect(w.intervalText).toMatch(/not a statistical confidence interval/i);
+  });
+
+  it("reports the share out of the seed-run count and labels the interval empirical", () => {
+    const w = seedEnsembleWording(fixtures.spread, "employmentRatePct", (v) => `${v}`);
+    expect(w.shareText).toContain("92%");
+    expect(w.shareText).toContain("12");
+    expect(w.intervalText).toMatch(/empirical 5th–95th percentile/);
+    expect(w.intervalText).toContain("12 seed runs");
+  });
+
+  it("refuses to state a probability or interval from a single run", () => {
+    const w = seedEnsembleWording(fixtures.single, "employmentRatePct", (v) => String(v));
+    expect(w.shareText).toMatch(/no seed-run share is reported/);
+    expect(w.intervalText).toMatch(/no seed interval is reported/);
   });
 });
 

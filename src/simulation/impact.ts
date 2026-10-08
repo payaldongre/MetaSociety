@@ -24,10 +24,50 @@ export function magnitudeCalibrationFor(_metric: MetricKey): CalibrationStatus {
  */
 export function directionStrengthFromEnsemble(u: MetricUncertainty): EvidenceStrength {
   if (u.seedCount <= 1) return "uncalibrated";
-  const agreement = Math.max(u.probabilityImproved, 1 - u.probabilityImproved);
+  const agreement = Math.max(u.improvedShare, 1 - u.improvedShare);
   if (agreement >= 0.9) return "moderate";
   if (agreement >= 0.7) return "limited";
   return "uncalibrated";
+}
+
+/**
+ * Honest wording for the seed ensemble. The requirement (spec §6, §22) is that a
+ * finite set of deterministic seed runs is presented as exactly that — an
+ * empirical SHARE and an empirical seed interval — never as a probability that
+ * the policy will work, a confidence level or a calibrated likelihood.
+ *
+ * The caller supplies the number formatter so the wording stays in one place
+ * while the units keep the page's own formatting.
+ */
+export interface SeedEnsembleWording {
+  /** Short label naming the denominator explicitly. */
+  shareLabel: string;
+  /** Full sentence: the share of simulated seed runs that improved, and out of how many. */
+  shareText: string;
+  /** Full sentence naming the mediation and the empirical seed interval. */
+  intervalText: string;
+}
+
+export function seedEnsembleWording(
+  u: MetricUncertainty,
+  metric: MetricKey,
+  format: (v: number) => string,
+): SeedEnsembleWording {
+  const label = METRIC_LABELS[metric] ?? metric;
+  if (u.seedCount <= 1) {
+    return {
+      shareLabel: "1 simulated seed run — no seed-run share reported",
+      shareText: "Only one simulated seed run is available, so no seed-run share is reported.",
+      intervalText: "Only one simulated seed run is available, so no seed interval is reported.",
+    };
+  }
+  const share = Math.round(u.improvedShare * 100);
+  const improves = LOWER_IS_BETTER.includes(metric) ? "lower" : "higher";
+  return {
+    shareLabel: `Share of simulated seed runs showing improvement in ${label.toLowerCase()}: ${share}% of ${u.seedCount}`,
+    shareText: `${share}% of the ${u.seedCount} simulated seed runs moved ${label.toLowerCase()} in the improving direction (${improves}). This is an empirical share over deterministic seed runs, not a probability.`,
+    intervalText: `Median change ${format(u.medianDelta)}; empirical 5th–95th percentile of seed-run changes ${format(u.p05Delta)} to ${format(u.p95Delta)} across ${u.seedCount} seed runs — a model/seed ensemble interval, not a statistical confidence interval.`,
+  };
 }
 
 const VERB: Record<string, string> = {
@@ -55,7 +95,7 @@ export interface MetricAssessment {
   directionStrength: EvidenceStrength;
   magnitudeCalibration: CalibrationStatus;
   /** Share of the ensemble on which the metric moved toward improvement. */
-  probabilityImproved: number;
+  improvedShare: number;
   /** The model ensemble interval (NOT a statistical confidence interval). */
   ensembleInterval: [number, number];
   headline: string;
@@ -87,7 +127,7 @@ export function assessMetric(result: SimulationResult, metric: MetricKey): Metri
     unit,
     directionStrength,
     magnitudeCalibration,
-    probabilityImproved: u.probabilityImproved,
+    improvedShare: u.improvedShare,
     ensembleInterval: [u.p05Delta, u.p95Delta],
     headline: `${phrase} Direction evidence: ${directionStrength}. Magnitude calibration: ${magnitudeCalibration}.`,
   };

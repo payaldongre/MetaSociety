@@ -723,7 +723,10 @@ export function validatePopulation(pop: Population): ValidationCheck[] {
 
   let males = 0;
   let females = 0;
-  for (let i = 0; i < pop.size; i += 1) (pop.sex[i] === 0 ? (males += 1) : (females += 1));
+  for (let i = 0; i < pop.size; i += 1) {
+    if (pop.sex[i] === 0) males += 1;
+    else females += 1;
+  }
   add("male count", males === CENSUS.male, String(males), String(CENSUS.male));
   add("female count", females === CENSUS.female, String(females), String(CENSUS.female));
 

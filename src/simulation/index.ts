@@ -150,8 +150,12 @@ export {
   type PolicyDomain,
 } from "./governance";
 export {
+  CHANNEL_DOMAIN,
   DOMAIN_LABELS,
+  PolicyFeasibilityError,
   briefToPolicyVector,
+  channelDomainsFor,
+  createDefaultBrief,
   legalBasisFor,
   validateBudget,
   validatePolicyBrief,
@@ -179,11 +183,17 @@ export {
   checkNoLeakage,
   runBacktest,
   runBacktestSuite,
+  runEngineBacktestSuite,
   summariseBacktests,
   type BacktestCase,
   type BacktestPrediction,
+  type BacktestRepresentation,
   type BacktestResult,
+  type BacktestStatus,
   type BacktestSummary,
+  type EngineBacktestOptions,
+  type EngineBacktestOutcome,
+  type EngineBacktestRunSummary,
 } from "./backtest";
 export {
   FOOTFALL_BANDS,
@@ -225,6 +235,7 @@ export {
   impactStatement,
   magnitudeCalibrationFor,
   reproducibilityInfo,
+  seedEnsembleWording,
   uncertaintyNarrative,
   type AttributionStep,
   type MetricAssessment,
