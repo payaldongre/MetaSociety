@@ -170,10 +170,17 @@ identically for both trajectories:
 
 The **only** intentional difference is the policy intervention. Shocks are never
 sampled independently for baseline and policy — otherwise a policy could look
-bad merely because it drew a worse event. In stochastic mode, the fixed seed
-ensemble *does* vary the shock realization across ensemble members, and the
-result reports that the interval spans scenario uncertainty, not one pretended
-fixed future.
+bad merely because it drew a worse event.
+
+The uncertainty ensemble holds this realization **fixed** too: every ensemble
+member and the baseline use the SAME generated schedule, and only the
+Monte-Carlo sampling seed varies. The reported headline is an ensemble median and
+the reported band is the seed-run interval, both measured against a baseline
+that saw the identical events — so the displayed policy delta is never inflated
+by comparing an ensemble member under one shock realization with a baseline under
+another. Scenario variation is explored by changing the configurable seed or the
+scenario configuration; the generated realization for the run is always listed in
+the result's `shocks` report and in the scenario preview.
 
 ## What the UI shows
 

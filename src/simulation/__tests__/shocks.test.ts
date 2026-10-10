@@ -23,6 +23,7 @@ import {
   shockNodeStatesFor,
   type GeneratedShockEvent,
   type ShockScenarioConfig,
+  type SimulationRequest,
 } from "@/simulation";
 import { createRng } from "@/simulation/rng";
 import { EXTERNAL_SHIFT, EXTERNAL_SHOCK_NODE_IDS } from "@/simulation/bn";
@@ -265,4 +266,55 @@ describe("no-shock mode is the existing simulation path", () => {
     expect(withNone.shocks?.events ?? []).toHaveLength(0);
     expect(without.shocks).toBeUndefined();
   }, 240_000);
+
+  it(
+    "Test I — the stochastic ensemble holds the shock realization fixed (paired counterfactuals)",
+    async () => {
+      // Regression for the fairness defect: the reported headline is the
+      // ensemble median and the reported band is a seed-run interval, both
+      // measured against ONE baseline. If a stochastic ensemble round drew its
+      // OWN shock realization, growing the ensemble would move the headline
+      // delta by scenario differences rather than sampling noise. Holding the
+      // schedule fixed keeps every member a paired counterfactual.
+      const scenario: ShockScenarioConfig = {
+        mode: "stochastic",
+        stochastic: [
+          { shockId: "economic-downturn", ratePerYear: 0.2, maxEvents: 5 },
+          { shockId: "public-health-emergency", ratePerYear: 0.1, maxEvents: 4 },
+        ],
+      };
+      // Same policy and seed as the audit that exposed the defect; this
+      // configuration produced a 4x headline inflation before the fix.
+      const shockPolicy: PolicyVector = {
+        channelIds: ["LABOR_MARKET", "EDUCATION_SKILL"],
+        name: "Ensemble pairing probe",
+        intensity: 0.7,
+        budget: 8e7,
+        durationMonths: 60,
+        allocation: { housing: 0.2, education: 0.4, employment: 0.4 },
+      };
+      const req: SimulationRequest = {
+        townId: "pandharpur_in_mh",
+        policy: shockPolicy,
+        mode: "single",
+        seed: 20260202,
+        bnVersion: BN_VERSION,
+        zoneFilter: "all",
+        scenario,
+      };
+      const single = await runSimulation(req, { intervalRounds: 0, skipSearch: true });
+      const ensemble = await runSimulation(req, { intervalRounds: 1, skipSearch: true });
+      // The scenario itself is identical across ensemble sizes.
+      const ev = (r: typeof single) => (r.shocks?.events ?? []).map((e) => `${e.time}:${e.severity}`).join(",");
+      expect(ev(ensemble)).toBe(ev(single));
+      expect((ensemble.shocks?.events ?? []).length).toBeGreaterThan(0);
+      // And the headline delta does not jump when the ensemble grows; only the
+      // small Monte-Carlo sampling variation is allowed.
+      const gdpDelta = (r: typeof single) => Math.abs(r.point.gdpGrowthPct);
+      const empDelta = (r: typeof single) => Math.abs(r.point.employmentRatePct - r.baseline.employmentRatePct);
+      expect(Math.abs(gdpDelta(ensemble) - gdpDelta(single))).toBeLessThan(1.5);
+      expect(Math.abs(empDelta(ensemble) - empDelta(single))).toBeLessThan(0.75);
+    },
+    240_000,
+  );
 });

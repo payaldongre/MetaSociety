@@ -265,15 +265,13 @@ function bandFor(value: number, lowCut: number, highCut: number): "low" | "mediu
  * headline. Both execution paths (direct engine and the Web Worker, which calls
  * the same `runSimulation`) go through here, so they cannot diverge.
  *
- * STATED LIMITATION (a resolution limit, not a calibrated finding). The network
- * is discrete — low/medium/high — so once the grounded value drops below the
- * "medium" cut-off the band saturates: two different weakly grounded policies
- * (say effect scales 0.10 and 0.35) map onto the same "low/low" policy state, and
- * the policy's own intensity and budget stop changing that state. The grounding
- * therefore bounds the modelled effect conservatively but does not resolve
- * differences *within* the weak-grounding regime. Fixing that would need a
- * higher-resolution (or continuous) policy dimension in the network, which is
- * deliberately NOT attempted here rather than tuned arbitrarily.
+ * LEGACY / REPORTING ONLY. The ENGINE no longer uses this helper: the coarse
+ * band saturation it describes (two different weakly grounded policies landing
+ * on the same low/low state) was the defect fixed by `declaredPolicyBands` +
+ * the continuous `groundedStrength` baked into the network (bn.ts). This helper
+ * is retained because it is still the documented banding used by the historical
+ * plausibility regression tests (`plausibility.test.ts`), which assert the old
+ * banding behaviour explicitly.
  */
 export interface GroundedPolicyBands {
   intensityBand: "low" | "medium" | "high";
@@ -1177,13 +1175,14 @@ export async function runSimulation(
         createRng(request.seed ^ (0x1000 + round)),
         effectScale,
         undefined,
-        // In stochastic mode each ensemble seed draws its OWN shock realization,
-        // so the reported interval reflects scenario uncertainty as well as
-        // sampling uncertainty. Manual and no-shock scenarios are identical
-        // across seeds.
-        request.scenario?.mode === "stochastic"
-          ? generateShockSchedule(request.scenario, periods, MONTHS_PER_PERIOD, request.seed ^ (0x1000 + round))
-          : schedule,
+        // EVERY ensemble member uses the SAME schedule as the baseline. This is
+        // a fairness invariant: the reported policy delta is (ensemble) minus
+        // (baseline), so if a round drew its own shock realization the delta
+        // would mix scenario differences with the policy effect. Holding the
+        // realization fixed makes each member a paired counterfactual; scenario
+        // variation is explored by changing the seed / scenario configuration,
+        // and the generated realization is reported in `shocks`.
+        schedule,
       ),
     );
     const m = adjustSeasonal(withGrowth(outcome.finalLevel, baselineGdp), policyPressure);
