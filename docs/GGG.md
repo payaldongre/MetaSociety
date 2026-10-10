@@ -136,8 +136,11 @@ GGG derives an effect scale for the run:
 effectScale = clamp( comparability × evidenceFactor × scaleFactor , 0.1 , 1 )
 ```
 
-- **comparability** — the best parent's similarity score (or a documented
-  `NO_PARENT_COMPARABILITY` of 0.35 when nothing matches);
+- **comparability** — the best parent's similarity score, or the documented
+  `NO_PARENT_COMPARABILITY` when nothing matches. It is defined as a fixed
+  fraction (0.8) of `MIN_PARENT_SCORE`, so a policy with **no** predecessor is
+  always grounded *weaker* than a policy with even the weakest admitted
+  predecessor — absence of evidence must never be rewarded;
 - **evidenceFactor** — from the strongest parent direction evidence
   (high 1.0 / moderate 0.8 / limited 0.55 / uncalibrated 0.4);
 - **scaleFactor** = `1 / (1 + Δlevels)` — the number of administrative levels by
@@ -145,9 +148,10 @@ effectScale = clamp( comparability × evidenceFactor × scaleFactor , 0.1 , 1 )
 
 Every factor is a stated model assumption, listed in
 `grounded.rationale`, together with the explicit note that **no historical
-outcome magnitude is copied**. The engine folds `effectScale` into the policy
-intensity and budget bands the Bayesian network reads, and into the per-agent
-direct effects, so a small local application of a larger mechanism cannot produce
+outcome magnitude is copied**. The engine passes `effectScale` into the network
+as a **continuous** multiplier on the policy log-shifts (see below), and scales
+the per-agent direct effects, so a small local application of a larger mechanism
+cannot produce
 the larger mechanism's effect. The applied intensity *reported to the UI* is the
 policy's own, so the grounding is visible as a separate labelled input rather
 than hidden inside a number.

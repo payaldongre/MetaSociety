@@ -21,6 +21,7 @@ import {
   CHANNELS,
   HISTORICAL_POLICIES,
   MIN_EFFECT_SCALE,
+  MIN_PARENT_SCORE,
   NO_PARENT_COMPARABILITY,
   PANDHARPUR_CONTEXT,
   SIMILARITY_WEIGHTS,
@@ -248,6 +249,28 @@ describe("grounded effect scale", () => {
     expect(steps).toContain("Pandharpur adaptation");
     expect(steps[steps.length - 1]).toBe("Result + uncertainty");
     expect(g.lineage.find((l) => l.step === "Historical parents")!.detail).toMatch(/MGNREGA/);
+  });
+
+  it("never grounds a no-parent policy more strongly than a matched one", () => {
+    // Structural invariant: absence of historical evidence must be WEAKER than
+    // the weakest admissible predecessor, never stronger.
+    expect(NO_PARENT_COMPARABILITY).toBeLessThan(MIN_PARENT_SCORE);
+    const noParent = groundedParameters(genomeFromPolicy(policy({ channelIds: ["TAX_FISCAL"] })), []);
+    // A synthetic weakest-admissible matched parent (score exactly MIN_PARENT_SCORE).
+    const weakParent = {
+      policyId: "weak",
+      name: "Weak predecessor",
+      channel: "INCOME_SUPPORT",
+      scale: "local",
+      overall: MIN_PARENT_SCORE,
+      breakdown: { channel: 1, mechanism: 0, causalNodes: 0, target: 0, context: 0, seasonality: 0, scale: 1, duration: 0.5 },
+      reason: "",
+      sharedTags: [],
+      sharedNodes: [],
+      evidenceStrength: "uncalibrated",
+    } as Parameters<typeof groundedParameters>[1][number];
+    const matched = groundedParameters(genomeFromPolicy(policy({ channelIds: ["INCOME_SUPPORT"] })), [weakParent]);
+    expect(matched.effectScale).toBeGreaterThanOrEqual(noParent.effectScale);
   });
 
   it("leaves the magnitude uncalibrated unless a parent observed the same engine metric", () => {

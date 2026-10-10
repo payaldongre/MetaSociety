@@ -141,7 +141,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <p className="mt-2 text-[11px] text-muted-foreground">
-                    GDP growth {delta >= 0 ? "+" : "−"}
+                    GDP vs no-policy {delta >= 0 ? "+" : "−"}
                     {Math.abs(delta).toFixed(1)}pp vs no-policy
                   </p>
                 </div>

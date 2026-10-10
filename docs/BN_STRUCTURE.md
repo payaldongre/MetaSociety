@@ -404,3 +404,16 @@ perturb the established RNG stream.
 continuous grounded effect scale into the policy log-shifts, replacing the old
 coarse low/medium/high collapse. The reference network used for the documented
 direction checks is built at `groundedStrength = 1`.
+
+**Multi-channel policies and the single `PolicyType` node.** `PolicyType` is one
+categorical node; the engine conditions each agent on exactly one family value
+per run. When a policy selects several implemented channels, only one family's
+pathway can drive the network. The applied family is chosen by
+`CHANNEL_PRECEDENCE` in `instruments.ts` — a fixed, documented order
+(most-direct labour/employment mechanism first) — so the result is
+**order-invariant**: reordering a policy's channels cannot change it. This is a
+stated limitation, not a hidden one: `runSimulation` emits a warning naming the
+applied family and listing the declared families that are not independently
+composed. True additive composition of multiple instrument pathways is future
+work, and until it exists the engine says so rather than implying that every
+listed channel contributed.

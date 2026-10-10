@@ -64,15 +64,101 @@ const FAMILY_ALLOCATION: Record<EngineInstrument, Allocation> = {
 };
 
 /**
- * The engine family a policy runs as: the family of its first IMPLEMENTED
- * channel, or "none" when every selected channel is still declared.
+ * Documented precedence used when a policy carries MORE THAN ONE implemented
+ * channel and the network can apply exactly one behavioural family.
+ *
+ * WHY THIS EXISTS. `PolicyType` is a single categorical node in the Bayesian
+ * network; the engine conditions each agent on ONE family value per run. When a
+ * policy selects several implemented channels, exactly one of their families can
+ * drive the causal tables. Before this list, the family was `channelIds[0]`-like
+ * (the first implemented channel in the caller's order), so simply REORDERING
+ * ["LABOR_MARKET", "EDUCATION_SKILL"] to ["EDUCATION_SKILL", "LABOR_MARKET"]
+ * silently changed the simulation. That is a correctness defect: the same policy
+ * must not produce different results because its channels were listed in a
+ * different order.
+ *
+ * THE RULE. The applied family is the family of the channel earliest in this
+ * fixed, documented precedence — the most DIRECT labour/employment mechanism
+ * first, then the other instruments — independent of the order the channels are
+ * listed. The precedence is a stated modelling choice, not tuned to any output.
+ *
+ * LIMITATION (stated, not hidden). Only the selected family's pathway is applied;
+ * the other implemented channels' mechanisms are NOT independently composed. The
+ * engine surfaces this explicitly (see `appliedChannelDisclosure`) so a
+ * multi-channel result is never presented as if every channel contributed its own
+ * causal pathway.
+ */
+export const CHANNEL_PRECEDENCE: string[] = [
+  "LABOR_MARKET",
+  "HOUSING",
+  "EDUCATION_SKILL",
+  "INCOME_SUPPORT",
+  "HEALTHCARE_ACCESS",
+  "TAX_FISCAL",
+  "REGULATION",
+  "PILGRIMAGE_FACILITIES",
+  // Declared channels last: they never win the family selection even if listed
+  // first, since their family is "none" anyway.
+  "INFRASTRUCTURE",
+  "DIGITAL_ACCESS",
+  "FOOD_SECURITY",
+  "ENVIRONMENT_CLIMATE",
+  "FINANCIAL_INCLUSION",
+];
+
+function precedenceIndex(id: string): number {
+  const i = CHANNEL_PRECEDENCE.indexOf(id);
+  return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+}
+
+/**
+ * The engine family a policy runs as: the family of its highest-precedence
+ * implemented channel (CHANNEL_PRECEDENCE), or "none" when every selected
+ * channel is still declared. Deterministic and INDEPENDENT of the order the
+ * channels are listed, so reordering a policy's channels cannot change its result.
  */
 export function engineInstrumentFor(channelIds: string[]): EngineInstrument {
+  let bestId: string | null = null;
+  let bestRank = Number.MAX_SAFE_INTEGER;
   for (const id of channelIds) {
     const fam = CHANNEL_ENGINE_FAMILY[id];
-    if (fam && fam !== "none") return fam;
+    if (!fam || fam === "none") continue;
+    const rank = precedenceIndex(id);
+    if (rank < bestRank) {
+      bestRank = rank;
+      bestId = id;
+    }
   }
-  return "none";
+  return bestId ? (CHANNEL_ENGINE_FAMILY[bestId] as EngineInstrument) : "none";
+}
+
+/**
+ * The implemented channels whose mechanisms a policy declares, mapped to their
+ * engine families, de-duplicated, in precedence order. Used to disclose when a
+ * multi-channel policy can apply only one of its pathways under the current
+ * single-`PolicyType` network.
+ */
+export function declaredFamilies(channelIds: string[]): EngineInstrument[] {
+  const out: EngineInstrument[] = [];
+  for (const id of [...channelIds].sort((a, b) => precedenceIndex(a) - precedenceIndex(b))) {
+    const fam = CHANNEL_ENGINE_FAMILY[id];
+    if (fam && fam !== "none" && !out.includes(fam)) out.push(fam);
+  }
+  return out;
+}
+
+/**
+ * An honest disclosure for a policy that carries several implemented channels:
+ * which family is applied and that the others are not independently composed.
+ * Returns null when the policy has at most one implemented family and there is
+ * nothing to disclose.
+ */
+export function appliedChannelDisclosure(
+  channelIds: string[],
+): { applied: EngineInstrument; unapplied: EngineInstrument[] } | null {
+  const families = declaredFamilies(channelIds);
+  if (families.length <= 1) return null;
+  return { applied: families[0], unapplied: families.slice(1) };
 }
 
 export function hasChannel(channelIds: string[], id: string): boolean {

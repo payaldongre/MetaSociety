@@ -176,8 +176,8 @@ export function impactStatement(result: SimulationResult, policyName: string): s
 
   return (
     `The proposed "${policyName}" policy ${dir} relative to the status quo. ` +
-    `Direction is supported by ${strongest} evidence, while magnitude is only partially calibrated ` +
-    `(all instrument magnitudes are currently uncalibrated against an evaluated programme). ` +
+    `Direction is supported by ${strongest} evidence, while magnitude is UNCALIBRATED ` +
+    `(no instrument magnitude is yet calibrated against an evaluated, comparable programme). ` +
     `${improving.length} metric(s) improve, ${adverse.length} move adversely, and ${assessments.length - improving.length - adverse.length} are roughly unchanged.`
   );
 }

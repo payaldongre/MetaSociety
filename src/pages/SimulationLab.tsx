@@ -71,6 +71,7 @@ import {
   IMPLEMENTED_CHANNELS,
   LOWER_IS_BETTER,
   METRIC_KEYS,
+  METRIC_DESCRIPTIONS,
   METRIC_LABELS,
   METRIC_UNITS,
   TOWN_DISTRICT,
@@ -215,7 +216,12 @@ function StatCard({
   const wording = seedEnsembleWording(uncertainty, metricKey, (v) => fmtDelta(metricKey, v));
   return (
     <div className="rounded-lg border bg-card p-3">
-      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{METRIC_LABELS[metricKey]}</p>
+      <p
+        className="text-[11px] uppercase tracking-wide text-muted-foreground"
+        title={METRIC_DESCRIPTIONS[metricKey]}
+      >
+        {METRIC_LABELS[metricKey]}
+      </p>
       <div className="mt-1 flex items-baseline gap-1.5">
         <span className="text-lg font-semibold text-card-foreground">{fmtMetric(metricKey, value)}</span>
         <Icon className={`h-3.5 w-3.5 ${deltaTone(metricKey, delta)}`} />
@@ -1458,7 +1464,7 @@ export default function SimulationLab() {
                           />
                           <Legend wrapperStyle={{ fontSize: 11 }} />
                           <ReferenceLine y={0} stroke="hsl(var(--border))" />
-                          <Bar dataKey="gdp" name="GDP growth, pp vs town-wide" radius={[3, 3, 0, 0]}>
+                          <Bar dataKey="gdp" name="GDP vs baseline, pp vs town-wide" radius={[3, 3, 0, 0]}>
                             {(["east", "west", "north", "south"] as Zone[]).map((zone) => (
                               <Cell
                                 key={zone}
@@ -1479,7 +1485,7 @@ export default function SimulationLab() {
                             <TableRow>
                               <TableHead className="text-xs">Zone</TableHead>
                               <TableHead className="text-xs">Population</TableHead>
-                              <TableHead className="text-xs">GDP growth</TableHead>
+                              <TableHead className="text-xs">GDP vs baseline</TableHead>
                               <TableHead className="text-xs">Employment</TableHead>
                               <TableHead className="text-xs">Happiness</TableHead>
                               <TableHead className="text-xs">Inflation</TableHead>

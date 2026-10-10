@@ -55,9 +55,12 @@ export {
 } from "./bn";
 export {
   CHANNEL_ENGINE_FAMILY,
+  CHANNEL_PRECEDENCE,
   allocationFor,
+  appliedChannelDisclosure,
   channelParams,
   channelsUseAllocation,
+  declaredFamilies,
   directTargetsFor,
   engineInstrumentFor,
   hasChannel,
@@ -77,6 +80,7 @@ export {
 } from "./channel-dictionary";
 export {
   LOWER_IS_BETTER,
+  METRIC_DESCRIPTIONS,
   METRIC_LABELS,
   METRIC_UNITS,
   SECTOR_PRODUCTIVITY,

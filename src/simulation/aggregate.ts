@@ -451,8 +451,15 @@ export function zonePopulations(pop: Population): Record<Zone, number> {
 /** Metric keys that should be interpreted as "lower is better" in the UI. */
 export const LOWER_IS_BETTER: MetricKey[] = ["inflationPct", "gini", "protestRisk", "migrationOutflowPct"];
 
+/**
+ * Honest display labels. `gdpGrowthPct` is NOT a growth RATE: it is the
+ * percentage DEVIATION of the modelled GDP level from the no-policy baseline
+ * (see `withGrowth` in simulate.ts), so it is labelled as a comparison, not as
+ * growth. The underlying `gdpLevel` is itself a productivity-weighted EMPLOYMENT
+ * proxy, not real-world macroeconomic GDP — stated here and in the UI note.
+ */
 export const METRIC_LABELS: Record<MetricKey, string> = {
-  gdpGrowthPct: "GDP growth",
+  gdpGrowthPct: "GDP vs no-policy baseline",
   employmentRatePct: "Employment rate",
   meanIncome: "Mean income / capita",
   wageIndex: "Average earnings",
@@ -461,6 +468,34 @@ export const METRIC_LABELS: Record<MetricKey, string> = {
   gini: "Gini coefficient",
   protestRisk: "Protest risk",
   migrationOutflowPct: "Migration outflow",
+};
+
+/**
+ * Central, single-source metric semantics. The engine, impact layer, UI cards,
+ * charts, tooltips and documentation all derive their meaning from here so the
+ * same metric cannot be described two different ways on two screens. Each entry
+ * states the quantity, its unit and what a positive number means — including the
+ * ones where "up" is not "better".
+ */
+export const METRIC_DESCRIPTIONS: Record<MetricKey, string> = {
+  gdpGrowthPct:
+    "Percentage DEVIATION of the modelled GDP level (a productivity-weighted employment proxy, NOT real GDP) from the no-policy baseline. Positive = more activity than with no policy.",
+  employmentRatePct:
+    "Share of the working-age population in formal or informal work. A rate, in percent; positive = more people employed.",
+  meanIncome:
+    "Mean household income per person, in rupees per month. A level, not a rate; positive = higher income.",
+  wageIndex:
+    "Mean monthly earnings of employed agents, in rupees. A level; distinct from mean income per capita, which includes non-earners.",
+  inflationPct:
+    "Modelled price index change, in percent per period. LOWER is treated as better, but not automatically: deflation is not an improvement.",
+  happinessIndex:
+    "Mean modelled sentiment, 0–100. An index, not a probability; higher = more positive sentiment.",
+  gini:
+    "Gini coefficient of the simulated household per-capita income distribution, 0–1. Structural: it is computed from the actual distribution, not from the mean.",
+  protestRisk:
+    "Mean per-agent protest propensity, in percent (share-weighted), NOT the union over all agents. A modelled risk, not an observed probability.",
+  migrationOutflowPct:
+    "Cumulative share of the population that has left the town, in percent. Driven by the migration pathway, not by GDP alone.",
 };
 
 export const METRIC_UNITS: Record<MetricKey, string> = {

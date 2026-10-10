@@ -415,7 +415,7 @@ export interface SimulationResult {
 
   point: Record<MetricKey, number>;
   intervals: Record<MetricKey, Interval>;
-  /** Probability-style headline aggregated over the random-seed ensemble. */
+  /** Empirical seed-ensemble share (NOT a probability) aggregated over the deterministic seed ensemble. */
   uncertainty: Record<MetricKey, MetricUncertainty>;
   /** Lineage this run belongs to (instrument + parameter-similarity bucket). */
   lineageKey: string;

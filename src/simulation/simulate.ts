@@ -37,7 +37,7 @@ import {
   zoneGdpLevel,
   zoneMetrics,
 } from "./aggregate";
-import { allocationFor, engineInstrumentFor, pendingChannelNodes } from "./instruments";
+import { allocationFor, appliedChannelDisclosure, engineInstrumentFor, pendingChannelNodes } from "./instruments";
 import { lineageKeyFor } from "./lineage";
 import type { AggregateBands, PeriodLevels } from "./aggregate";
 import { CHANNEL_LAGS_MONTHS } from "./census";
@@ -994,6 +994,18 @@ export async function runSimulation(
       policyFamily === "none"
         ? `Every selected channel is declared but not yet wired into the network (${names}). Their Bayesian-network nodes (${missing}) do not exist, so this run applies no causal effect: no budget is spent and no BN state is shifted. Any small difference from the baseline is seed-sampling noise, not a modelled impact.`
         : `Some selected channels are declared but not yet wired into the network (${names}); they contribute no causal effect and the run uses the implemented channels only (family "${policyFamily}").`,
+    );
+  }
+
+  // Multi-channel disclosure: `PolicyType` is a single BN node, so a policy that
+  // declares several implemented channels has exactly one family applied. Say so
+  // explicitly rather than letting the evaluator infer that every listed channel
+  // contributed its own causal pathway. The applied family is order-invariant
+  // (see CHANNEL_PRECEDENCE in instruments.ts).
+  const disclosure = appliedChannelDisclosure(policy.channelIds);
+  if (disclosure) {
+    warnings.push(
+      `This policy declares several implemented channels, but the Bayesian network applies one behavioural family at a time; the applied family is "${disclosure.applied}" (chosen by the fixed channel precedence, independent of the order the channels are listed). The other declared family/families (${disclosure.unapplied.map((f) => `"${f}"`).join(", ")}) are not independently composed into this run.`,
     );
   }
 

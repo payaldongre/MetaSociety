@@ -84,7 +84,10 @@ describe("impact language (spec §19, §28)", () => {
   it("leads with a readable, honest impact statement", () => {
     const statement = impactStatement(fixture(), "Housing support");
     expect(statement).toMatch(/^The proposed "Housing support" policy/);
-    expect(statement).toMatch(/magnitude is only partially calibrated/);
+    // The statement must state the magnitude honestly: every instrument
+    // magnitude is uncalibrated, so it must NOT say "partially calibrated".
+    expect(statement).toMatch(/magnitude is UNCALIBRATED/);
+    expect(statement).not.toMatch(/partially calibrated/i);
     expect(statement).not.toMatch(/100% accurate/i);
   });
 });

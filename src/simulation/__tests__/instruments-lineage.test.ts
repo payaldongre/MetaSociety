@@ -12,6 +12,7 @@ import {
   DECLARED_CHANNELS,
   IMPLEMENTED_CHANNELS,
   allocationFor,
+  appliedChannelDisclosure,
   bestInLineage,
   buildBn,
   channelsUseAllocation,
@@ -51,6 +52,30 @@ describe("Part A — channel dictionary", () => {
     expect(pendingChannelNodes(["INFRASTRUCTURE", "HOUSING"])).toEqual([
       { channelId: "INFRASTRUCTURE", missingNodes: ["InfraAccess"] },
     ]);
+  });
+
+  it("selects the engine family independently of channel order", () => {
+    // The concrete defect: reordering a multi-channel policy must not change the
+    // simulation. The applied family is chosen by a fixed precedence.
+    expect(engineInstrumentFor(["LABOR_MARKET", "EDUCATION_SKILL"])).toBe("labor");
+    expect(engineInstrumentFor(["EDUCATION_SKILL", "LABOR_MARKET"])).toBe("labor");
+    // Order-invariance must hold for EVERY pair of implemented channels.
+    const ids = IMPLEMENTED_CHANNELS.map((c) => c.id);
+    for (const a of ids) {
+      for (const b of ids) {
+        expect(engineInstrumentFor([a, b])).toBe(engineInstrumentFor([b, a]));
+      }
+    }
+  });
+
+  it("discloses that a multi-channel policy applies only one family", () => {
+    expect(appliedChannelDisclosure(["LABOR_MARKET"])).toBeNull();
+    const d = appliedChannelDisclosure(["EDUCATION_SKILL", "LABOR_MARKET"]);
+    expect(d).not.toBeNull();
+    // Order-invariant: the applied family is the same whichever way it is listed.
+    expect(d).toEqual(appliedChannelDisclosure(["LABOR_MARKET", "EDUCATION_SKILL"]));
+    expect(d!.applied).toBe("labor");
+    expect(d!.unapplied).toContain("education");
   });
 
   it("renders allocation only where channels genuinely use it", () => {

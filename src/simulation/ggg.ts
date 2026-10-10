@@ -403,8 +403,19 @@ const EVIDENCE_FACTOR: Record<EvidenceStrength, number> = {
   uncalibrated: 0.4,
 };
 
-/** Comparability used when no historical predecessor is found. */
-export const NO_PARENT_COMPARABILITY = 0.35;
+/**
+ * Comparability used when no historical predecessor is found.
+ *
+ * ABSENCE OF EVIDENCE MUST NOT BE REWARDED. This value is defined as a fixed
+ * fraction of MIN_PARENT_SCORE (the score a historical policy must clear to be a
+ * parent at all), so a policy with NO predecessor is always grounded WEAKER than
+ * a policy with even the weakest admitted predecessor. Before this invariant a
+ * no-parent policy (comparability 0.35) could receive a LARGER effect scale than
+ * a policy matched to a weak predecessor (score just above 0.34), which rewarded
+ * the absence of historical evidence. The invariant is structural, not tuned:
+ * `NO_PARENT_COMPARABILITY < MIN_PARENT_SCORE` by construction.
+ */
+export const NO_PARENT_COMPARABILITY = MIN_PARENT_SCORE * 0.8;
 
 /** Floor on the effect scale, so a policy is scaled down, never silently zeroed. */
 export const MIN_EFFECT_SCALE = 0.1;
@@ -482,6 +493,9 @@ export function runGgg(policy: PolicyVector, brief?: PolicyBrief): GggInheritanc
   if (parents.length === 0) {
     notes.push(
       "No historical predecessor met the similarity threshold. The policy runs at the conservative floor effect scale and its magnitude is explicitly uncalibrated.",
+    );
+    notes.push(
+      "Absence of historical evidence is treated as WEAKER grounding than the weakest admitted predecessor: the no-parent comparability is a fixed fraction of the parent-admission threshold, so a policy with no predecessor can never be grounded more strongly than a matched one.",
     );
   }
   if (magnitudeCal === "uncalibrated") {
