@@ -9,7 +9,7 @@ _Educational reference for the Inference Lab model_
 > file must change with it; the Simulation Lab's **Model structure** tab renders
 > the same data from these definitions so it cannot drift.
 
-`BN_VERSION = "1.0.0"`. There are **29 nodes**. Inference is ancestral
+`BN_VERSION` is read from the code (currently `1.1.0`). There are **35 nodes** (30 core + 5 exogenous shock roots). Inference is ancestral
 (forward) sampling, exact for this query pattern because all evidence sits on
 roots or near-roots (the runtime guard `assertEvidenceIsUpstream` enforces it).
 
@@ -375,3 +375,32 @@ counted-vs-assumed tag. See `src/simulation/bn.ts` for the definitions and the
   state written back into the population (GDP weight, sector counts, savings
   clamp), not through another BN node. They do affect outputs, so they are
   justified — but they should not be mistaken for parents of anything.
+
+---
+
+## 8. Declarative registry, validation and exogenous shock nodes
+
+The node registry is now self-describing. Each `NodeSpec` carries its `domain`,
+`parents`, evaluation `pass`, `cptSource`, a machine-readable `calibration`
+(`observed` | `derived` | `assumed` | `historical_evidence`) and a
+`provenance` string. Adding a node is a data change in the registry.
+
+`buildBn` validates the dynamic graph with `validateBnGraph` before it is used:
+duplicate node ids, missing parents, invalid domains, cycles, CPT rows of the
+wrong dimension, probabilities outside `[0, 1]`, non-normalising rows and invalid
+evaluation passes are all rejected. A malformed network fails loudly.
+
+**Exogenous shock nodes.** Five roots were added for the external-shock system
+(see `docs/EXTERNAL_SHOCKS.md`): `ExternalHealthShock`, `ExternalEconomicShock`,
+`ExternalClimateShock`, `ExternalInfrastructureShock`, `ExternalSocialShock`.
+Each has domain `none | mild | moderate | severe`, defaults to `none`, and is
+supplied as evidence for the periods its event is active. They are wired as
+parents of a bounded set of downstream micro/town nodes (`SHOCK_DIMS` /
+`EXTERNAL_SHIFT`); the `none` row is a zero shift, so a run that configures no
+scenario is unchanged. Shock roots never draw a uniform, so adding them does not
+perturb the established RNG stream.
+
+**Continuous grounding.** `buildBn(pop, { groundedStrength })` bakes GGG's
+continuous grounded effect scale into the policy log-shifts, replacing the old
+coarse low/medium/high collapse. The reference network used for the documented
+direction checks is built at `groundedStrength = 1`.

@@ -9,6 +9,7 @@
 
 import type { PolicyBrief } from "./policy-brief";
 import type { GggInheritance } from "./ggg";
+import type { ShockReport, ShockScenarioConfig } from "./shocks";
 
 /* ------------------------------------------------------------------ */
 /* Spatial + demographic vocabularies                                  */
@@ -390,6 +391,12 @@ export interface SimulationRequest {
   seed: number;
   bnVersion: string;
   zoneFilter?: Zone | "all";
+  /**
+   * Optional external-shock stress test. The generated scenario is applied
+   * IDENTICALLY to the no-policy baseline and the proposed policy, so the
+   * counterfactual comparison stays causally fair (see shocks.ts).
+   */
+  scenario?: ShockScenarioConfig;
 }
 
 export interface TrajectoryPoint {
@@ -449,6 +456,14 @@ export interface SimulationResult {
    * contributes a pilgrimage effect.
    */
   seasonality?: SeasonalReport;
+
+  /**
+   * External-shock scenario actually applied during the run (shocks.ts). Present
+   * whenever a scenario was configured; absent (or mode "none") means the run
+   * used normal conditions. Reports the generated events, the arrival model and
+   * the explicit confirmation that baseline and policy shared the schedule.
+   */
+  shocks?: ShockReport;
 }
 
 export interface SeasonalReport {

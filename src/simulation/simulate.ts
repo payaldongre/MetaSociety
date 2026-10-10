@@ -62,6 +62,16 @@ import { clonePopulation, generatePopulation, validatePopulation } from "./popul
 import { PolicyFeasibilityError, validatePolicyBrief } from "./policy-brief";
 import { clamp, clamp01, createRng, fnv1a, type Rng } from "./rng";
 import { runGgg, type GggInheritance } from "./ggg";
+import {
+  EventQueue,
+  advanceActive,
+  buildShockReport,
+  generateShockSchedule,
+  shockNodeStatesFor,
+  type ActiveShock,
+  type GeneratedShockEvent,
+  type ShockSchedule,
+} from "./shocks";
 import { AGE_BANDS, EDUCATION_LEVELS, EMPLOYMENT_STATUSES, INCOME_CLASSES, METRIC_KEYS, QUALITY_LEVELS, ZONES } from "./types";
 import type {
   DecisionEngine,
@@ -283,6 +293,24 @@ export function groundedPolicyBands(
   };
 }
 
+/**
+ * The policy's OWN declared intensity/budget/duration bands — what the policy IS,
+ * before historical grounding. THE FIX: GGG's grounding is no
+ * longer folded into these coarse bands (which collapsed materially different
+ * grounded policies onto the same low/low state). Instead the declared bands
+ * still describe the policy, and GGG's CONTINUOUS grounded effect scale is baked
+ * into the network's conditional tables (see `buildBn(base, { groundedStrength })`
+ * and `policyLogShift`), so two grounded strengths that differ by any amount
+ * produce two different causal states.
+ */
+export function declaredPolicyBands(policy: PolicyVector, appliedIntensity: number): GroundedPolicyBands {
+  return {
+    intensityBand: bandFor(appliedIntensity, 0.4, 0.72),
+    budgetBand: bandFor(policy.budget / REFERENCE_BUDGET, 0.25, 0.6),
+    durationBand: policy.durationMonths <= 12 ? "short" : policy.durationMonths <= 36 ? "medium" : "long",
+  };
+}
+
 function trustBandOf(pop: Population, i: number): string {
   return pop.trustInGov[i] < 0.36 ? "low" : pop.trustInGov[i] < 0.6 ? "medium" : "high";
 }
@@ -314,6 +342,8 @@ function* trajectoryGenerator(
   /** GGG grounded effect scale applied to the modelled policy shift. */
   effectScale: number,
   onPeriod?: (fraction: number) => void,
+  /** External-shock scenario (shocks.ts). The SAME schedule drives baseline and policy. */
+  schedule?: ShockSchedule,
 ): Generator<DecisionRequest, TrajectoryOutcome, DecisionResponse> {
   const states = new Int32Array(c.ids.length);
   // Isolated stream for nodes registered after the original network, so adding
@@ -336,9 +366,21 @@ function* trajectoryGenerator(
   // declared-only channel sets resolve to "none" (no silent substitution).
   const family = engineInstrumentFor(policy.channelIds);
 
+  // A private event queue per trajectory, seeded from the shared schedule so two
+  // trajectories (baseline and policy) process an IDENTICAL shock sequence.
+  const shockQueue = new EventQueue<GeneratedShockEvent>();
+  for (const event of schedule?.events ?? []) shockQueue.push(event);
+  let activeShocks: ActiveShock[] = [];
+
   for (let p = 0; p < spec.count; p += 1) {
     const month = (p + 1) * spec.monthsEach;
     const applied = rampFor(policy.channelIds, month, policy.intensity);
+
+    // dequeue every event whose simulated period has arrived; expire those whose
+    // window has ended. This is the "dequeue" step: pop due events, apply them.
+    const dueShocks = shockQueue.dequeueDue(p);
+    activeShocks = advanceActive(activeShocks, dueShocks, p);
+    const shockStates = shockNodeStatesFor(activeShocks);
 
     // A channel set the dictionary marks "declared" resolves to the "none"
     // family: nothing in the network represents it. Such a run must be an exact
@@ -361,7 +403,9 @@ function* trajectoryGenerator(
     // policy's own, so the grounding is visible as a separate, labelled input
     // rather than hidden inside the number the evaluator sees.
     const groundedApplied = effectiveApplied * effectScale;
-    const { intensityBand, budgetBand, durationBand } = groundedPolicyBands(policy, effectiveApplied, effectScale);
+    // The DECLARED policy bands describe the policy; the continuous grounding is
+    // already baked into the network's tables (built with groundedStrength).
+    const { intensityBand, budgetBand, durationBand } = declaredPolicyBands(policy, effectiveApplied);
 
     let taxRevenue = 0;
     let transfersAssigned = 0;
@@ -383,6 +427,7 @@ function* trajectoryGenerator(
         EducationLevel: EDUCATION_LEVELS[pop.education[i]],
         HousingQuality: QUALITY_LEVELS[pop.housing[i]],
         TrustInGov: trustBandOf(pop, i),
+        ...shockStates,
       });
       // Validate the evidence construction once per run: sampling is only exact
       // when conditioning happens on fully-fixed ancestry.
@@ -521,6 +566,7 @@ function* trajectoryGenerator(
         TrustInGov: trustBandOf(pop, i),
         ...bands,
         Inflation: (["low", "moderate", "high"] as const)[inflationBand],
+        ...shockStates,
       });
       if (p === 0 && a === 0) assertEvidenceIsUpstream(c, fixed);
       sampleTownAndFeedback(c, states, fixed, rng);
@@ -843,7 +889,12 @@ export function getPopulation(seed = 20260101): Population {
 
 function validationChecks(pop: Population, c: CompiledBn): ValidationCheck[] {
   if (!cachedPopulationValidation) cachedPopulationValidation = validatePopulation(pop);
-  if (!cachedNetworkValidation) cachedNetworkValidation = validateBnDirection(c.bn, pop, 400);
+  // The network's documented RESPONSE DIRECTIONS are a property of the
+  // reference network, not of one policy's grounding. Validate the reference
+  // build (groundedStrength = 1); validating the per-run grounded build would
+  // make a weakly-grounded policy look like a broken network.
+  if (!cachedNetworkValidation) cachedNetworkValidation = validateBnDirection(buildBn(pop), pop, 400);
+  void c;
   return [...cachedPopulationValidation, ...cachedNetworkValidation];
 }
 
@@ -908,9 +959,29 @@ export async function runSimulation(
     fraction: 0.04,
     detail: `${base.size.toLocaleString()} agents · manifest ${base.manifest}`,
   });
-  const c = compileBn(buildBn(base));
-
   const periods = Math.max(1, Math.round(policy.durationMonths / MONTHS_PER_PERIOD));
+
+  // GGG's continuous grounded effect scale is baked into the network's
+  // conditional tables at BUILD time (not quantised into a band), so the policy
+  // shift the network reads is grounded at full resolution. The baseline cannot
+  // be affected: its policy family is "none", whose log-shift is null.
+  const c = compileBn(buildBn(base, { groundedStrength: effectScale }));
+
+  // External-shock scenario (shocks.ts). Generated ONCE from the simulation seed
+  // and replayed identically for the baseline and the policy, so policy
+  // differences are not contaminated by a different shock realization.
+  const schedule = generateShockSchedule(request.scenario, periods, MONTHS_PER_PERIOD, request.seed);
+  if (request.scenario && request.scenario.mode !== "none") {
+    warnings.push(
+      `External-shock stress test (${schedule.arrivalModel.toLowerCase()}): ${schedule.events.length} hypothetical event(s) scheduled over ${periods} periods. The same schedule is applied to the baseline and the policy; these are scenario assumptions, not predictions.`,
+    );
+    onProgress({
+      phase: "Generating external-shock scenario",
+      fraction: 0.06,
+      detail: `${schedule.events.length} event(s) · ${schedule.arrivalModel}`,
+    });
+  }
+
   const policyFamily = engineInstrumentFor(policy.channelIds);
 
   // A channel the dictionary marks "declared" has no Bayesian-network path yet.
@@ -969,6 +1040,8 @@ export async function runSimulation(
       { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
       createRng(request.seed ^ 0x1a2b3c),
       1,
+      undefined,
+      schedule,
     ),
   );
   const baselineGdp = baselineOutcome.finalLevel.gdpLevel || 1;
@@ -1075,6 +1148,7 @@ export async function runSimulation(
           fraction: 0.6 + 0.25 * fraction,
           detail: `period ${Math.ceil(fraction * periods)} of ${periods}`,
         }),
+      schedule,
     ),
     engine,
   );
@@ -1102,6 +1176,14 @@ export async function runSimulation(
         { count: periods, monthsEach: MONTHS_PER_PERIOD, agents: null },
         createRng(request.seed ^ (0x1000 + round)),
         effectScale,
+        undefined,
+        // In stochastic mode each ensemble seed draws its OWN shock realization,
+        // so the reported interval reflects scenario uncertainty as well as
+        // sampling uncertainty. Manual and no-shock scenarios are identical
+        // across seeds.
+        request.scenario?.mode === "stochastic"
+          ? generateShockSchedule(request.scenario, periods, MONTHS_PER_PERIOD, request.seed ^ (0x1000 + round))
+          : schedule,
       ),
     );
     const m = adjustSeasonal(withGrowth(outcome.finalLevel, baselineGdp), policyPressure);
@@ -1212,10 +1294,15 @@ export async function runSimulation(
     MigrationAggregate: "low",
     Inflation: (["low", "moderate", "high"] as const)[treatedOutcome.inflationBand],
   };
+  const horizonShockStates = shockNodeStatesFor(
+    schedule.events
+      .filter((e) => e.time <= periods - 1 && e.time + e.durationPeriods - 1 >= periods - 1)
+      .map((e) => ({ event: e, endPeriod: e.time + e.durationPeriods - 1 })),
+  );
   const causalAttributionFactors = causalAttribution(
     c,
     "EmploymentStatus",
-    evidenceForAgent(treatedPop, 0, policy, treatmentBands, effectScale),
+    evidenceForAgent(treatedPop, 0, policy, treatmentBands, horizonShockStates),
     2500,
     createRng(request.seed ^ 0xcafe),
   );
@@ -1314,6 +1401,7 @@ export async function runSimulation(
     validation: validationChecks(base, c),
     warnings,
     ggg: grounding,
+    shocks: request.scenario ? buildShockReport(request.scenario, schedule) : undefined,
     seasonality: {
       policyCarriesPilgrimage: policySeasonal.exposure !== "none",
       exposure: policySeasonal.exposure,
@@ -1376,11 +1464,12 @@ function evidenceForAgent(
   i: number,
   policy: PolicyVector,
   bands: Record<string, string>,
-  effectScale = 1,
+  shockStates: Record<string, string> = {},
 ): Evidence {
-  // The SAME grounded bands the period loop feeds the network, so the causal
-  // attribution explains the scenario that actually ran.
-  const { intensityBand, budgetBand, durationBand } = groundedPolicyBands(policy, policy.intensity, effectScale);
+  // The SAME declared bands the period loop feeds the network, so the causal
+  // attribution explains the scenario that actually ran. The grounded effect
+  // scale is baked into the network's tables rather than carried here.
+  const { intensityBand, budgetBand, durationBand } = declaredPolicyBands(policy, policy.intensity);
   return {
     PolicyType: engineInstrumentFor(policy.channelIds),
     PolicyIntensity: intensityBand,
@@ -1392,6 +1481,7 @@ function evidenceForAgent(
     HousingQuality: QUALITY_LEVELS[pop.housing[i]],
     TrustInGov: trustBandOf(pop, i),
     ...bands,
+    ...shockStates,
   };
 }
 

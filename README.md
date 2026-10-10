@@ -8,6 +8,7 @@
 - Based on this, the system suggests suitable policies along with expected outcomes and risks.
 
 - These policies can then be tested in the Simulation Lab, where a virtual town of agent-citizens responds to each decision. Response directions are checked on every run, and **GGG grounds each policy's effect against real historical predecessors**; magnitudes remain model assumptions and are **not calibrated** against an evaluated programme.
+- Because a policy must survive more than a quiet decade, the Lab can also run **external-shock stress tests**. The user chooses normal conditions, a specific hypothetical event (start period, duration, severity), or a stochastic scenario in which a Poisson arrival model generates hypothetical event *timing*. Shocks are never a raw output adjustment: a dequeued event temporarily intervenes on an **exogenous Bayesian-network node**, and the causally propagated consequences reach the town outcomes. The identical shock schedule is applied to the no-policy baseline and the policy, so the comparison stays causally fair. These are **hypothetical stress tests, not predictions**.
 
 - The platform then shows the economic and social impact, including key metrics, risk alerts, and comparisons between different scenarios.
 
@@ -33,7 +34,7 @@ produces an outcome, a magnitude, or a chart series.
   households, children 0–6, SC/ST share, literacy by gender and worker counts by gender). The
   Census fields are verified; income, sector, education and housing are modelled, and
   `src/simulation/census.ts` states which is which field by field.
-- **Bayesian network** — 30 nodes (derived from `NODE_REGISTRY`, not hardcoded; a test pins the count so the docs
+- **Bayesian network** — 35 nodes (derived from `NODE_REGISTRY`, not hardcoded; a test pins the count so the docs
   cannot drift), with conditional probability tables counted from the population
   wherever a node is observable, and documented priors elsewhere. Interventions use `do(...)` by
   graph mutilation, so a policy effect is causal rather than a conditional read.

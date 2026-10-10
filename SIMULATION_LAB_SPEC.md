@@ -79,7 +79,7 @@ GDP growth ←───────── Public sentiment (happiness) → Prote
 - **Town-level output** = a weighted aggregation of all profile-level outputs, weighted by how many real citizens fall into each profile — so a profile covering 8,000 citizens correctly outweighs one covering 80.
 - **This stage is what makes the Simulation Lab decisive rather than generative** (Section 0): its output is a probability distribution over an outcome, computed by graph inference from real conditional probabilities, not sampled from a language model's sense of what sounds plausible.
 
-> **As built.** Implemented in TypeScript, not Python: `src/simulation/bn.ts` (30 nodes). CPTs are counted directly from the population for every node whose parents are observable, with documented priors only for the genuinely unobservable ones (latent demand, sector output, the aggregate bands, and the policy parameters themselves). Every table records its provenance. Interventions use `do(...)` by graph mutilation (`withIntervention`), so a policy effect is causal rather than a conditional read. A microservice split is not required to satisfy this section; the acceptance checks are what matter, and they live in `src/simulation/__tests__/engine.test.ts`.
+> **As built.** Implemented in TypeScript, not Python: `src/simulation/bn.ts` (35 nodes). CPTs are counted directly from the population for every node whose parents are observable, with documented priors only for the genuinely unobservable ones (latent demand, sector output, the aggregate bands, and the policy parameters themselves). Every table records its provenance. Interventions use `do(...)` by graph mutilation (`withIntervention`), so a policy effect is causal rather than a conditional read. A microservice split is not required to satisfy this section; the acceptance checks are what matter, and they live in `src/simulation/__tests__/engine.test.ts`.
 
 ---
 
@@ -180,7 +180,7 @@ This section records what is implemented against the phases above, and what rema
 | Spec | As built |
 |---|---|
 | `pandharpur_synthetic_population.csv` as a file artifact | Generated in memory, deterministically, from the published Census 2011 totals (`src/simulation/population.ts`), with the verified figures asserted on every run. No 98,923-row artifact to drift from the code; `population.manifest` hashes the generation inputs. |
-| `pgmpy` Python Bayesian network (`backend/agent_simulation/network.py`) | `src/simulation/bn.ts` — a 30-node discrete DAG with a hand-written exact-inference path. CPTs counted from the population where observable; documented priors only where not. |
+| `pgmpy` Python Bayesian network (`backend/agent_simulation/network.py`) | `src/simulation/bn.ts` — a 35-node discrete DAG with a hand-written exact-inference path. CPTs counted from the population where observable; documented priors only where not. |
 | `scipy` / custom DE (`backend/agent_simulation/optimizer.py`) | `src/simulation/de.ts` — DE/rand/1/bin + NSGA-II non-dominated sort + crowding distance, with a random-search control. |
 | `supabase/functions/simulate` + the `simulations` migration | Not built as an Edge Function. The engine runs in the browser; persistence is `src/lib/runStore.ts` (browser store always; Supabase insert when `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY` are set and a user id is available). This workspace has no Supabase project configured, so the remote path is present but not verifiable end to end — stated rather than implied. |
 
@@ -189,7 +189,7 @@ This section records what is implemented against the phases above, and what rema
 | Phase | Status | Evidence |
 |---|---|---|
 | 1–3 Citizen-level population, profile cells | Done | `population.ts`; the suite asserts 98,923 agents, exact Census totals, >100 populated `(incomeClass, workerStatus, sector, ward)` cells, and no dropped citizen. |
-| 4 Bayesian network | Done | `bn.ts` — 30 nodes, `do(...)` by graph mutilation, posterior marginals by ancestral sampling, causal attribution by mutual information. |
+| 4 Bayesian network | Done | `bn.ts` — 35 nodes, `do(...)` by graph mutilation, posterior marginals by ancestral sampling, causal attribution by mutual information. |
 | 5 Direction validation | Done | `validateBnDirection` is run on every run and its checks appear in the evidence pack; the suite asserts every documented direction holds with no failures. |
 | 6 Differential Evolution | Done | `de.ts`; the suite asserts convergence toward a known optimum, seed determinism, a correct non-dominated front, and a random-search control. |
 | 7 Service boundary | Not built (browser engine instead) | The engine is pure, so moving it behind a service is a port, not a rewrite. |
@@ -208,3 +208,71 @@ Headline metrics are summations over the agent population and the stated identit
 3. **Literacy audit** against the primary Census 2011 PDF (effective vs crude definition — the alternative is retained in `census.ts` so the discrepancy stays visible).
 4. **Ward → zone mapping** replaced with sourced ward geography (currently population-balanced contiguous ranges, tagged `estimated`).
 5. **A learned predictor over accumulated rollouts**, in the non-generative spirit of Section 6.3.
+
+## 10. As-built: dynamic nodes, resolution and external shocks
+
+This section records the simulation-architecture work that followed Section 9. It
+is enforced by tests in `src/simulation/__tests__/bn-dynamic.test.ts`,
+`shocks.test.ts` and `ggg-shock-integration.test.ts`.
+
+### 10.1 GGG → BN resolution (was the P0 defect)
+
+The original path grounded the policy and then banded the grounded value to
+`low/medium/high`, collapsing materially different grounded policies onto the
+same BN state. The fix keeps the policy's **declared** bands and passes GGG's
+**continuous** grounded effect scale into `buildBn(pop, { groundedStrength })`,
+where it multiplies the policy log-shift inside `policyLogShift`. A normalised
+`exp` transformation is applied to each conditional distribution and renormalised
+to a valid probability vector. The network's documented direction checks are
+validated on the reference build (`groundedStrength = 1`), never on a weakly
+grounded per-run build.
+
+### 10.2 Declarative dynamic nodes
+
+A node is declared by `NodeSpec`:
+
+```ts
+interface NodeSpec {
+  id: string;
+  domain: string[];
+  parents: string[];
+  pass: "micro" | "town" | "feedback";
+  root: boolean;
+  cptSource: "observed" | "prior" | "derived";
+  modelled: boolean;
+  extension: boolean;
+  calibration: "observed" | "derived" | "assumed" | "historical_evidence";
+  provenance: string;
+}
+```
+
+Adding a node is a data change in the registry plus, where the node is
+unobservable, a documented prior or shift. The three scheduling lists are derived
+from the registry, so a node cannot drift out of the scheduler.
+
+`validateBnGraph` (called by `buildBn` before the network is used) rejects
+duplicate node ids, missing parents, invalid domains, cycles, CPT rows of the
+wrong dimension, probabilities outside `[0, 1]`, rows that do not normalise, and
+nodes with an invalid evaluation pass. A malformed network fails loudly instead
+of silently producing a simulation.
+
+### 10.3 Seasonal nodes
+
+`PilgrimFootfall`, `SeasonalInfraLoad` and `LocalInfraQuality` are declared with
+the same registry shape in `seasonality.ts`. They are evaluated from an isolated
+code path so that adding them could never rewrite the established network's
+uniforms, and their seasonal response is genuinely temporal: the Wari window
+(June–July) produces a measurable step in civic pressure that a non-pilgrimage
+policy does not acquire. Pilgrimage remains one policy domain among many.
+
+### 10.4 External shocks, Poisson, the event queue and dequeue
+
+See `docs/EXTERNAL_SHOCKS.md`. In brief: `shocks.ts` generates a deterministic
+scenario (manual or Poisson arrivals), inserts it into a binary min-heap event
+queue, and the engine calls `dequeueDue(period)` each period. A dequeued event
+temporarily intervenes on an exogenous BN node (`ExternalEconomicShock`,
+`ExternalHealthShock`, `ExternalClimateShock`,
+`ExternalInfrastructureShock`, `ExternalSocialShock`) for its active window;
+the network propagates the consequences causally. The same schedule is applied
+to the no-policy baseline and the proposed policy, so the only difference between
+the two is the policy intervention.

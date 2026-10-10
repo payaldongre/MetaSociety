@@ -47,7 +47,7 @@ describe("population provenance: generator is canonical, CSV is a validation art
   it("documents the actual BN node count so docs cannot drift silently", () => {
     // README/SIMULATION_LAB_SPEC state this count. If the registry changes,
     // this fails and the docs must be updated in the same commit.
-    expect(NODE_REGISTRY.length).toBe(30);
+    expect(NODE_REGISTRY.length).toBe(35);
     expect(new Set(NODE_REGISTRY.map((n) => n.id)).size).toBe(NODE_REGISTRY.length);
   });
 

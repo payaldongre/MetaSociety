@@ -225,3 +225,46 @@ GGG carries no claim of predictive accuracy.
 - Where a historical programme's mechanism is not yet a wired engine channel
   (e.g. `FINANCIAL_INCLUSION`), GGG grounds its characteristics but the engine
   applies no causal effect and says so.
+
+## How the grounded effect scale reaches the network (the resolution fix)
+
+`grounded.effectScale` is the single number GGG hands to the causal engine. The
+original implementation folded it into coarse low/medium/high intensity and
+budget bands before the network saw it, so two materially different grounded
+policies (say effect scales 0.10 and 0.35) collapsed onto the same `low/low`
+policy state and produced identical causal behaviour.
+
+That is now fixed **without adding more bands**:
+
+```
+GGG grounded value (effectScale ∈ (0,1])
+        ↓
+continuous bounded causal parameter
+        ↓
+policy log-shift multiplier baked into the BN's conditional tables
+        ↓
+normalised (softmax) CPT transformation
+```
+
+Concretely:
+
+- The policy's own **declared** intensity/budget/duration bands still describe
+  what the policy *is* (`declaredPolicyBands`).
+- GGG's grounded scale is passed to `buildBn(pop, { groundedStrength })` and
+  multiplies every policy log-shift inside `policyLogShift`. Because it is a
+  continuous multiplier, any two different grounded strengths give two different
+  conditional distributions — the coarse-band collapse is gone.
+- The multiplier is bounded to `[0, 1]`; the CPT transformation multiplies each
+  distribution element by `exp(shift)` and renormalises, so probabilities can
+  never leave `[0, 1]` or fail to sum to 1.
+
+Neither the declared bands nor the grounded multiplier is an empirical
+coefficient: both are stated model assumptions, documented in
+`src/simulation/ggg.ts` and `src/simulation/bn.ts`. The reference network used
+for the documented *direction* checks is built at `groundedStrength = 1`, so a
+weakly-grounded policy can never make the network's own directional claims look
+broken.
+
+Regression tests `bn-dynamic.test.ts` (Tests 1–6) prove that grounded-state
+differentiation, intensity sensitivity, budget sensitivity, GGG sensitivity,
+channel isolation and determinism all hold.

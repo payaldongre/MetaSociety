@@ -94,7 +94,9 @@ import {
   type MetricUncertainty,
   type PolicyBrief,
   type PolicyVector,
+  shockDefinitionById,
   type ProvenanceTag,
+  type ShockScenarioConfig,
   type SimulationResult,
   type Zone,
 } from "@/simulation";
@@ -102,6 +104,7 @@ import { listRuns, saveRun, type SavedRun } from "@/lib/runStore";
 import { PolicyBriefPanel } from "@/components/PolicyBriefPanel";
 import { HistoricalBacktestPanel } from "@/components/HistoricalBacktestPanel";
 import { GggPanel } from "@/components/GggPanel";
+import { ShockPanel } from "@/components/ShockPanel";
 import { assessMetric, impactStatement, reproducibilityInfo, seedEnsembleWording, uncertaintyNarrative } from "@/simulation";
 
 /* ------------------------------------------------------------------ */
@@ -132,7 +135,7 @@ const PROVENANCE_STYLES: Record<ProvenanceTag, string> = {
  */
 const MODEL_LIMITATIONS: string[] = [
   "Income and sector are modelled, not Census-measured. Only population, sex split, households, children 0–6, literacy and worker counts are verified Census 2011 figures — see the provenance ledger in the Data tab.",
-  "No external economic shocks are modelled: no recession, no new national policy, no commodity-price movement.",
+  "External shocks are OPTIONAL hypothetical stress tests, not forecasts: a stochastic scenario draws event timing from a user-set Poisson arrival rate and applies it identically to the baseline and the policy. No specific real-world event is predicted, and the arrival rate is a scenario assumption, not a sourced hazard rate.",
   "One town only (Pandharpur, Solapur). There is no migration between towns and no spillover from neighbouring economies.",
   "Response directions are checked on every run; magnitudes are not yet calibrated. Anchoring income and sector to NSSO or District Census Handbook tables is what would make the sizes claimable.",
   "The ward-to-zone mapping is population-balanced contiguous ranges — an assumption, not sourced ward geography.",
@@ -307,6 +310,8 @@ export default function SimulationLab() {
   const [optimize, setOptimize] = useState(false);
   const [engineKind, setEngineKind] = useState<"rule" | "jev" | "llm">("rule");
   const [seed, setSeed] = useState("20260101");
+  // External-shock scenario (shocks.ts): normal conditions by default.
+  const [scenario, setScenario] = useState<ShockScenarioConfig>({ mode: "none" });
   // The channel picker is the UI's way of declaring the brief's channels; keep
   // the brief's channelIds and derived domains in step so the governance
   // competence check always runs against what would actually be simulated.
@@ -321,6 +326,7 @@ export default function SimulationLab() {
 
   const feasibility = useMemo(() => validatePolicyBrief(brief), [brief]);
   const policyName = brief.title;
+  const shockPeriods = Math.max(1, Math.round(feasibility.derived.durationMonths / 3));
 
   const selected = useMemo(() => selectedChannels(channelIds), [channelIds]);
   const pendingNodes = useMemo(() => pendingChannelNodes(channelIds), [channelIds]);
@@ -385,8 +391,9 @@ export default function SimulationLab() {
         optimize,
         engineKind,
         seed,
+        scenario,
       }),
-    [alloc, brief, channelIds, engineKind, intensityPct, optimize, seed],
+    [alloc, brief, channelIds, engineKind, intensityPct, optimize, scenario, seed],
   );
 
   // Allocation shares are normalised to sum to 1 before the run; show the
@@ -485,6 +492,10 @@ export default function SimulationLab() {
           seed: Number.isFinite(parsedSeed) ? parsedSeed : 20260101,
           bnVersion: BN_VERSION,
           zoneFilter: "all",
+          // The generated shock scenario travels with the request; the engine
+          // re-generates it from the seed and applies it to BOTH the baseline
+          // and the policy.
+          scenario,
         },
         {
           engineKind,
@@ -519,7 +530,7 @@ export default function SimulationLab() {
         setProgress(null);
       }
     }
-  }, [alloc, brief, configSignature, engineKind, feasibility, intensityPct, optimize, seed]);
+  }, [alloc, brief, configSignature, engineKind, feasibility, intensityPct, optimize, scenario, seed]);
 
   const downloadResult = useCallback(() => {
     if (!result) return;
@@ -690,6 +701,14 @@ export default function SimulationLab() {
             </div>
 
             <PolicyBriefPanel brief={brief} feasibility={feasibility} onChange={setBrief} />
+
+            <ShockPanel
+              scenario={scenario}
+              onChange={setScenario}
+              periods={shockPeriods}
+              monthsEach={3}
+              seed={Number.isFinite(Number.parseInt(seed, 10)) ? Number.parseInt(seed, 10) : 20260101}
+            />
 
             {/* The numeric sliders are DEMOTED into an advanced section (spec §27):
                 the primary workflow is the structured policy brief above, and the
@@ -941,6 +960,60 @@ export default function SimulationLab() {
               </Card>
 
               {result.ggg && <GggPanel ggg={result.ggg} />}
+
+              {result.shocks && (
+                <Card className="animate-fade-up border-warning/30">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <AlertTriangle className="h-4 w-4 text-warning" />
+                      External conditions · {result.shocks.mode === "none" ? "normal conditions" : result.shocks.arrivalModel.toLowerCase() + " scenario"}
+                    </CardTitle>
+                    <p className="text-xs text-muted-foreground">
+                      Hypothetical stress-test events applied to the SAME schedule for the baseline and the policy — not
+                      predictions of future disasters.
+                    </p>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {result.shocks.mode === "none" ? (
+                      <p className="text-xs text-muted-foreground">No external events were applied.</p>
+                    ) : (
+                      <>
+                        <p className="text-[11px] text-muted-foreground">
+                          Policy horizon {result.shocks.policyHorizonMonths} months · {result.shocks.events.length} generated
+                          event(s) · seed {result.shocks.seed}
+                        </p>
+                        {result.shocks.events.map((e, i) => (
+                          <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-2 text-[11px]">
+                            <Badge variant="outline" className="text-[10px]">{e.severity}</Badge>
+                            <span className="font-medium text-card-foreground">{shockDefinitionById(e.shockId)?.name ?? e.shockId}</span>
+                            <span className="text-muted-foreground">
+                              period {e.time + 1} · {e.durationPeriods} periods · {e.node}
+                            </span>
+                            <span className="ml-auto text-muted-foreground">{e.arrivalModel === "POISSON" ? "Poisson arrival" : "user-configured"}</span>
+                          </div>
+                        ))}
+                        {result.shocks.rates.length > 0 && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Arrival-rate assumption: {result.shocks.rates.map((r) => `${r.shockId} λ=${r.ratePerYear}/yr`).join(", ")} ·
+                            source: user/model scenario assumption, used only to generate hypothetical event timing.
+                          </p>
+                        )}
+                        <p className="text-[11px] text-muted-foreground">
+                          Affected causal nodes: {result.shocks.affectedNodes.join(", ") || "none"}.
+                        </p>
+                      </>
+                    )}
+                    <div className="rounded-md border bg-muted/20 p-2">
+                      <p className="text-[11px] font-medium text-card-foreground">Counterfactual fairness</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Same shock sequence: {result.shocks.sameScheduleForBaselineAndPolicy ? "✓" : "✗"} · Same seed: ✓ · Same population: ✓ ·
+                        different policy intervention only.
+                      </p>
+                    </div>
+                    <p className="text-[10px] leading-snug text-muted-foreground">{result.shocks.disclosure}</p>
+                  </CardContent>
+                </Card>
+              )}
 
               {resultsStale && (
                 <Card className="animate-fade-up border-warning/40 bg-warning/5">

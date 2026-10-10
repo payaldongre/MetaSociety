@@ -49,6 +49,18 @@ export const EMPLOYMENT_AGG = ["low", "normal", "high"] as const;
 export const MIGRATION_AGG = ["low", "normal", "high"] as const;
 export const SECTOR_OUTPUT_AGG = ["declining", "stable", "rising"] as const;
 
+/** Domain of every exogenous external-shock node ("none" means inactive). */
+export const EXTERNAL_SHOCK_DOMAIN = ["none", "mild", "moderate", "severe"] as const;
+
+/** The exogenous shock node ids, as a mutable array for the scheduler filters. */
+export const EXTERNAL_SHOCK_NODE_IDS: string[] = [
+  "ExternalHealthShock",
+  "ExternalEconomicShock",
+  "ExternalClimateShock",
+  "ExternalInfrastructureShock",
+  "ExternalSocialShock",
+];
+
 export const DOMAINS: Record<string, string[]> = {
   /* --- policy + exogenous roots (evidence) --- */
   PolicyType: [...ENGINE_INSTRUMENTS],
@@ -91,6 +103,14 @@ export const DOMAINS: Record<string, string[]> = {
   PublicSentiment: [...SENTIMENTS],
   MigrationIntentBand: ["stay", "consider", "leave"],
   ProtestRiskBand: ["low", "medium", "high"],
+
+  /* --- exogenous external-shock nodes (shocks.ts) --- */
+  /* Always supplied as evidence, so a no-shock run draws nothing extra. */
+  ExternalHealthShock: [...EXTERNAL_SHOCK_DOMAIN],
+  ExternalEconomicShock: [...EXTERNAL_SHOCK_DOMAIN],
+  ExternalClimateShock: [...EXTERNAL_SHOCK_DOMAIN],
+  ExternalInfrastructureShock: [...EXTERNAL_SHOCK_DOMAIN],
+  ExternalSocialShock: [...EXTERNAL_SHOCK_DOMAIN],
 };
 
 const PARENTS: Record<string, string[]> = {
@@ -157,6 +177,128 @@ const POLICY_SHIFT_DIMS: Record<string, string[]> = {
 };
 
 /**
+ * Which exogenous shock nodes each downstream node conditions on. A shock node
+ * is a ROOT supplied as evidence for the period(s) its event is active; when it
+ * reads "none" the row shift is exactly zero, so a no-shock run is unchanged.
+ * Declaring the edges here (rather than editing each node by hand) is what makes
+ * a shock a data change rather than an engine change.
+ */
+const SHOCK_DIMS: Record<string, string[]> = {
+  SectorDemand: ["ExternalEconomicShock", "ExternalClimateShock"],
+  IncomeClass: ["ExternalEconomicShock"],
+  EmploymentStatus: ["ExternalEconomicShock", "ExternalHealthShock"],
+  SpendingCapacity: ["ExternalEconomicShock", "ExternalHealthShock"],
+  HouseholdStress: ["ExternalClimateShock", "ExternalInfrastructureShock"],
+  HealthBurden: ["ExternalHealthShock", "ExternalClimateShock"],
+  ProtestRiskBand: ["ExternalSocialShock"],
+  MigrationIntentBand: ["ExternalSocialShock"],
+};
+
+/**
+ * Documented additive log-weight shifts from an exogenous shock node, indexed
+ * by the shock node's severity state (none | mild | moderate | severe) and then
+ * the child's own state. Every entry is a MODEL ASSUMPTION: only the direction
+ * is asserted (a worse shock pushes the child toward its worse states); the
+ * magnitudes are bounded and are not calibrated to any observed event.
+ */
+export const EXTERNAL_SHIFT: Record<string, Record<string, number[][]>> = {
+  SectorDemand: {
+    ExternalEconomicShock: [
+      [0, 0, 0],
+      [0.35, 0, -0.25],
+      [0.75, 0, -0.5],
+      [1.2, 0, -0.85],
+    ],
+    ExternalClimateShock: [
+      [0, 0, 0],
+      [0.3, 0, -0.15],
+      [0.55, 0, -0.3],
+      [0.9, 0, -0.55],
+    ],
+  },
+  IncomeClass: {
+    ExternalEconomicShock: [
+      [0, 0, 0, 0, 0, 0],
+      [0.3, 0.15, 0, -0.15, -0.2, -0.2],
+      [0.6, 0.3, 0, -0.3, -0.4, -0.45],
+      [1.0, 0.5, 0, -0.5, -0.7, -0.8],
+    ],
+  },
+  EmploymentStatus: {
+    ExternalEconomicShock: [
+      [0, 0, 0],
+      [0.45, 0.1, -0.4],
+      [0.85, 0.15, -0.7],
+      [1.3, 0.2, -1.0],
+    ],
+    ExternalHealthShock: [
+      [0, 0, 0],
+      [0.25, 0.05, -0.2],
+      [0.5, 0.08, -0.4],
+      [0.85, 0.12, -0.65],
+    ],
+  },
+  SpendingCapacity: {
+    ExternalEconomicShock: [
+      [0, 0, 0],
+      [0.3, 0, -0.25],
+      [0.6, 0, -0.5],
+      [1.0, 0, -0.8],
+    ],
+    ExternalHealthShock: [
+      [0, 0, 0],
+      [0.3, 0, -0.25],
+      [0.55, 0, -0.45],
+      [0.9, 0, -0.7],
+    ],
+  },
+  HouseholdStress: {
+    ExternalClimateShock: [
+      [0, 0, 0],
+      [-0.3, 0, 0.3],
+      [-0.6, 0, 0.6],
+      [-0.9, 0, 0.9],
+    ],
+    ExternalInfrastructureShock: [
+      [0, 0, 0],
+      [-0.25, 0, 0.25],
+      [-0.5, 0, 0.5],
+      [-0.8, 0, 0.8],
+    ],
+  },
+  HealthBurden: {
+    ExternalHealthShock: [
+      [0, 0, 0],
+      [-0.35, 0, 0.35],
+      [-0.7, 0, 0.7],
+      [-1.1, 0, 1.1],
+    ],
+    ExternalClimateShock: [
+      [0, 0, 0],
+      [-0.2, 0, 0.2],
+      [-0.4, 0, 0.4],
+      [-0.7, 0, 0.7],
+    ],
+  },
+  ProtestRiskBand: {
+    ExternalSocialShock: [
+      [0, 0, 0],
+      [-0.3, 0, 0.3],
+      [-0.6, 0, 0.6],
+      [-0.95, 0, 0.95],
+    ],
+  },
+  MigrationIntentBand: {
+    ExternalSocialShock: [
+      [0, 0, 0],
+      [-0.25, 0, 0.25],
+      [-0.5, 0, 0.5],
+      [-0.8, 0, 0.8],
+    ],
+  },
+};
+
+/**
  * The scheduling pass each node belongs to. The three-pass scheduler walks the
  * registry by this field instead of calling hardcoded named functions.
  *
@@ -185,6 +327,17 @@ const NODE_PASS: Record<string, "micro" | "town" | "feedback"> = {
   AgentSectorOutput: "micro",
   HealthInsurance: "micro",
   HealthBurden: "micro",
+  /* aggregate bands (set deterministically by the aggregation step) */
+  AggregateDemand: "micro",
+  AggregateSectorOutput: "micro",
+  EmploymentAggregate: "micro",
+  MigrationAggregate: "micro",
+  /* exogenous external-shock roots (shocks.ts) — always supplied as evidence */
+  ExternalHealthShock: "micro",
+  ExternalEconomicShock: "micro",
+  ExternalClimateShock: "micro",
+  ExternalInfrastructureShock: "micro",
+  ExternalSocialShock: "micro",
   /* town */
   Inflation: "town",
   EmploymentRateBand: "town",
@@ -237,6 +390,11 @@ const NODE_CPT_SOURCE: Record<string, "observed" | "prior" | "derived"> = {
   PublicSentiment: "observed",
   MigrationIntentBand: "observed",
   ProtestRiskBand: "observed",
+  ExternalHealthShock: "prior",
+  ExternalEconomicShock: "prior",
+  ExternalClimateShock: "prior",
+  ExternalInfrastructureShock: "prior",
+  ExternalSocialShock: "prior",
 };
 
 /**
@@ -244,6 +402,13 @@ const NODE_CPT_SOURCE: Record<string, "observed" | "prior" | "derived"> = {
  * walks. Adding a node is a data change here (plus, where it is unobservable, a
  * documented prior), not a hand-edit of the engine's named functions.
  */
+/**
+ * How a node's conditional structure was obtained. Kept distinct so the UI and
+ * documentation can tell a measured relationship (observed) from a documented
+ * model assumption (assumed), rather than presenting them the same way.
+ */
+export type NodeCalibration = "observed" | "derived" | "assumed" | "historical_evidence";
+
 export interface NodeSpec {
   id: string;
   domain: string[];
@@ -256,6 +421,10 @@ export interface NodeSpec {
   modelled: boolean;
   /** Registered after the original network; scheduled from an isolated stream. */
   extension: boolean;
+  /** Observed / derived / assumed, so the provenance is machine-readable. */
+  calibration: NodeCalibration;
+  /** Human-readable provenance of this node's conditional table. */
+  provenance: string;
 }
 
 /**
@@ -301,25 +470,46 @@ const PASS_SCHEDULE: Record<"micro" | "town" | "feedback", string[]> = {
   feedback: ["PublicSentiment", "MigrationIntentBand", "ProtestRiskBand"],
 };
 
+/** Observed from the population, derived (an aggregate band), or assumed. */
+function calibrationFor(id: string, cptSource: NodeSpec["cptSource"], modelled: boolean): NodeCalibration {
+  if (cptSource === "observed") return "observed";
+  if (cptSource === "derived") return "derived";
+  if (modelled) return "assumed";
+  return "assumed";
+}
+
+function provenanceFor(id: string, cptSource: NodeSpec["cptSource"], modelled: boolean): string {
+  if (cptSource === "observed") return "estimated_from_population";
+  if (cptSource === "derived") return "derived_from_aggregation";
+  return modelled ? "prior:assumption (flagged model assumption)" : "prior:assumption";
+}
+
 export const NODE_REGISTRY: NodeSpec[] = Object.keys(DOMAINS).map((id) => {
   const parents = policyParentsFor(id);
+  const cptSource = NODE_CPT_SOURCE[id] ?? "prior";
+  const modelled = MODELLED_NODES.has(id) || EXTERNAL_SHOCK_NODE_IDS.includes(id);
   return {
     id,
     domain: DOMAINS[id],
     parents,
     pass: NODE_PASS[id] ?? "micro",
     root: parents.length === 0,
-    cptSource: NODE_CPT_SOURCE[id] ?? "prior",
-    modelled: MODELLED_NODES.has(id),
+    cptSource,
+    modelled,
     extension: EXTENSION_NODES.has(id),
+    calibration: calibrationFor(id, cptSource, modelled),
+    provenance: provenanceFor(id, cptSource, modelled),
   };
 });
 
 /** Effective policy configuration for a table row, incl. the shift's dimensions. */
 function policyParentsFor(id: string): string[] {
   const declared = PARENTS[id] ?? [];
-  const extra = (POLICY_SHIFT_DIMS[id] ?? []).filter((p) => !declared.includes(p));
-  return [...declared, ...extra];
+  const policyExtra = (POLICY_SHIFT_DIMS[id] ?? []).filter((p) => !declared.includes(p));
+  const shockExtra = (SHOCK_DIMS[id] ?? []).filter(
+    (p) => !declared.includes(p) && !policyExtra.includes(p),
+  );
+  return [...declared, ...policyExtra, ...shockExtra];
 }
 
 /**
@@ -472,7 +662,11 @@ export const DOMAIN_LEGENDS: Record<string, string> = {
  * Policy effects: additive log-weights scaled by intensity and budget share.
  * These are the documented, checkable directions of each instrument.
  */
-function policyLogShift(nodeId: string, policy: Record<string, string>): number[] | null {
+function policyLogShift(
+  nodeId: string,
+  policy: Record<string, string>,
+  groundedStrength = 1,
+): number[] | null {
   const type = (policy.PolicyType ?? "none") as EngineInstrument;
   // An unspecified dimension falls back to the reference (medium) scaling, not
   // the minimum: "not stated" must never be read as "weakest possible policy".
@@ -480,7 +674,16 @@ function policyLogShift(nodeId: string, policy: Record<string, string>): number[
     policy.PolicyIntensity === "high" ? 1 : policy.PolicyIntensity === "low" ? 0.35 : 0.65;
   const budgetScale =
     policy.PolicyBudgetShare === "high" ? 1 : policy.PolicyBudgetShare === "low" ? 0.3 : 0.6;
-  const s = intensityScale * budgetScale;
+  // GGG's CONTINUOUS grounded effect scale (ggg.ts). This is the fix for the
+  // information-loss defect: instead of banding the grounded value down to
+  // low/medium/high (which collapsed materially different grounded policies onto
+  // the same BN state), the grounded value multiplies the policy's causal
+  // log-shift directly, so two grounded strengths that differ by any amount
+  // produce two different conditional distributions. The multiplier is bounded
+  // to [0,1]; it is a stated model assumption (the grounded effect scale), not
+  // an empirical coefficient.
+  const grounding = Math.max(0, Math.min(1, groundedStrength));
+  const s = intensityScale * budgetScale * grounding;
 
   switch (nodeId) {
     case "SectorDemand":
@@ -703,6 +906,13 @@ const PRIORS: Record<string, { dist: number[]; source: string }> = {
   EmploymentRateBand: { dist: [0.12, 0.22, 0.34, 0.22, 0.1], source: "prior:assumption" },
   TownGDPGrowthBand: { dist: [0.08, 0.24, 0.38, 0.22, 0.08], source: "prior:assumption" },
   WageLevelBand: { dist: [0.1, 0.3, 0.34, 0.2, 0.06], source: "prior:assumption" },
+  // Exogenous shock roots default to "none": an un-fixed draw can only ever be
+  // "none", so a run that supplies no shock evidence behaves exactly as before.
+  ExternalHealthShock: { dist: [1, 0, 0, 0], source: "prior:assumption" },
+  ExternalEconomicShock: { dist: [1, 0, 0, 0], source: "prior:assumption" },
+  ExternalClimateShock: { dist: [1, 0, 0, 0], source: "prior:assumption" },
+  ExternalInfrastructureShock: { dist: [1, 0, 0, 0], source: "prior:assumption" },
+  ExternalSocialShock: { dist: [1, 0, 0, 0], source: "prior:assumption" },
 };
 
 function keyFor(states: number[]): string {
@@ -725,7 +935,21 @@ function comboStates(c: number, sizes: number[]): number[] {
  * rows for the unobservable parents. Nodes with no observable parent use a
  * documented prior distribution.
  */
-export function buildBn(pop: Population): Bn {
+/**
+ * Build-time context the declarative node registry reads. The only entry today
+ * is GGG's continuous grounded effect scale, which is baked into the policy
+ * log-shifts when the network is built. Passing it at BUILD time (rather than
+ * as another discrete evidence node) is deliberate: it keeps the grounded value
+ * at full resolution instead of quantising it into bands.
+ */
+export interface BnContext {
+  /** GGG grounded effect scale in (0,1]; 1 is the fully-grounded reference. */
+  groundedStrength: number;
+}
+
+export const DEFAULT_BN_CONTEXT: BnContext = { groundedStrength: 1 };
+
+export function buildBn(pop: Population, context: BnContext = DEFAULT_BN_CONTEXT): Bn {
   const nodes: Record<string, BnNode> = {};
   for (const id of Object.keys(DOMAINS)) {
     const parents = policyParentsFor(id);
@@ -743,11 +967,21 @@ export function buildBn(pop: Population): Bn {
     const domain = nodes[id].domain;
     const domainN = domain.length;
     const parents = nodes[id].parents;
+    const shockParents = parents.filter((p) => EXTERNAL_SHOCK_NODE_IDS.includes(p));
     const latentParents = parents.filter(
-      (p) => !POLICY_NODE_IDS.includes(p) && pop.size > 0 && observedStateFor(pop, 0, p) < 0,
+      (p) =>
+        !POLICY_NODE_IDS.includes(p) &&
+        !EXTERNAL_SHOCK_NODE_IDS.includes(p) &&
+        pop.size > 0 &&
+        observedStateFor(pop, 0, p) < 0,
     );
     const observableParents = parents.filter(
-      (p) => !POLICY_NODE_IDS.includes(p) && !latentParents.includes(p) && pop.size > 0 && observedStateFor(pop, 0, p) >= 0,
+      (p) =>
+        !POLICY_NODE_IDS.includes(p) &&
+        !EXTERNAL_SHOCK_NODE_IDS.includes(p) &&
+        !latentParents.includes(p) &&
+        pop.size > 0 &&
+        observedStateFor(pop, 0, p) >= 0,
     );
     const policyParents = parents.filter((p) => POLICY_NODE_IDS.includes(p));
 
@@ -817,11 +1051,23 @@ export function buildBn(pop: Population): Bn {
         dist = dist.map((v, k) => v * Math.exp(row[k] ?? 0));
       }
 
-      // Documented policy effects, scaled by intensity and budget share.
+      // Documented external-shock interventions (shocks.ts). A shock node reads
+      // "none" when no event is active, and the "none" row shift is exactly zero,
+      // so a no-shock run is byte-identical to one without this dimension.
+      for (const p of shockParents) {
+        const byShock = EXTERNAL_SHIFT[id]?.[p];
+        if (!byShock) continue;
+        const row = byShock[fullStates[parents.indexOf(p)]];
+        if (!row) continue;
+        dist = dist.map((v, k) => v * Math.exp(row[k] ?? 0));
+      }
+
+      // Documented policy effects, scaled by intensity, budget share AND GGG's
+      // continuous grounded strength.
       if (policyParents.length > 0) {
         const policy: Record<string, string> = {};
         for (const p of policyParents) policy[p] = DOMAINS[p][fullStates[parents.indexOf(p)]];
-        const shift = policyLogShift(id, policy);
+        const shift = policyLogShift(id, policy, context.groundedStrength);
         if (shift) dist = dist.map((v, k) => v * Math.exp(shift[k] ?? 0));
       }
 
@@ -830,7 +1076,7 @@ export function buildBn(pop: Population): Bn {
     }
 
     const provenance = hasObservableData
-      ? latentParents.length + policyParents.length > 0
+      ? latentParents.length + policyParents.length + shockParents.length > 0
         ? "estimated_from_population+prior:assumption"
         : "estimated_from_population"
       : prior.source;
@@ -844,12 +1090,164 @@ export function buildBn(pop: Population): Bn {
     };
   }
 
-  return {
+  const bn: Bn = {
     version: BN_VERSION,
     nodes,
     order: [...MICRO_NODES, ...TOWN_NODES, ...FEEDBACK_NODES],
     cpts,
   };
+
+  // The engine validates the dynamic graph BEFORE it runs it: a malformed
+  // network fails loudly here rather than silently producing a simulation.
+  assertValidBnGraph(bn);
+  return bn;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dynamic-graph validation                                            */
+/* ------------------------------------------------------------------ */
+
+/** Return one node id left inside a cycle, or null when the graph is acyclic. */
+function findCycleNode(bn: Bn): string | null {
+  const ids = Object.keys(bn.nodes);
+  const indegree: Record<string, number> = {};
+  const adjacency: Record<string, string[]> = {};
+  for (const id of ids) {
+    indegree[id] = 0;
+    adjacency[id] = [];
+  }
+  for (const id of ids) {
+    for (const parent of bn.nodes[id].parents) {
+      if (!bn.nodes[parent]) continue;
+      adjacency[parent].push(id);
+      indegree[id] += 1;
+    }
+  }
+  const queue = ids.filter((id) => indegree[id] === 0);
+  let visited = 0;
+  while (queue.length > 0) {
+    const node = queue.shift() as string;
+    visited += 1;
+    for (const child of adjacency[node]) {
+      indegree[child] -= 1;
+      if (indegree[child] === 0) queue.push(child);
+    }
+  }
+  if (visited === ids.length) return null;
+  return ids.filter((id) => indegree[id] > 0).join(", ");
+}
+
+/**
+ * Validate a dynamic Bayesian network. Detects duplicate node ids, missing
+ * parents, invalid domains, circular dependencies, invalid CPT dimensions,
+ * probabilities outside [0,1], rows that do not normalise, and nodes assigned
+ * to an invalid evaluation pass. Pure: it inspects the graph and reports.
+ */
+export function validateBnGraph(bn: Bn): ValidationCheck[] {
+  const checks: ValidationCheck[] = [];
+  const add = (check: string, passed: boolean, observed: string, expected: string) =>
+    checks.push({ group: "network", check, passed, observed, expected });
+
+  const ids = Object.keys(bn.nodes);
+
+  // Node ids are object keys, so uniqueness there is structural; the real risk
+  // is a duplicate in the SCHEDULING order or the declarative registry, both of
+  // which are arrays.
+  const duplicates: string[] = [];
+  const seenOrder = new Set<string>();
+  for (const id of bn.order) {
+    if (seenOrder.has(id)) duplicates.push(id);
+    seenOrder.add(id);
+  }
+  const specIds = NODE_REGISTRY.map((spec) => spec.id);
+  const registryDup = specIds.filter((id, i) => specIds.indexOf(id) !== i);
+  add(
+    "no duplicate node ids",
+    duplicates.length === 0 && registryDup.length === 0,
+    [...duplicates, ...registryDup].join(", ") || `${ids.length} unique ids`,
+    "unique ids in the registry and the scheduling order",
+  );
+
+  const registryIds = new Set(NODE_REGISTRY.map((spec) => spec.id));
+  const unregistered = ids.filter((id) => !registryIds.has(id));
+  add(
+    "every node is declared in the registry",
+    unregistered.length === 0,
+    unregistered.join(", ") || "all nodes declared",
+    "no undeclared nodes",
+  );
+
+  const dangling: string[] = [];
+  for (const id of ids) for (const parent of bn.nodes[id].parents) if (!bn.nodes[parent]) dangling.push(`${id} -> ${parent}`);
+  add("every parent node exists", dangling.length === 0, dangling.join(", ") || "all parents resolved", "no missing parents");
+
+  const badDomain = ids.filter((id) => {
+    const domain = bn.nodes[id].domain;
+    return domain.length === 0 || new Set(domain).size !== domain.length;
+  });
+  add(
+    "every node has a non-empty, duplicate-free domain",
+    badDomain.length === 0,
+    badDomain.join(", ") || "all domains valid",
+    "valid state domains",
+  );
+
+  const cycle = findCycleNode(bn);
+  add("graph is acyclic", cycle === null, cycle ?? "topological order exists", "no directed cycle");
+
+  let dimError = "";
+  let probError = "";
+  let normError = "";
+  for (const id of ids) {
+    const node = bn.nodes[id];
+    const cpt = bn.cpts[id];
+    if (!cpt) {
+      dimError = dimError || `${id}: no conditional table`;
+      continue;
+    }
+    const expectedRows = node.parents.reduce((acc, parent) => acc * (bn.nodes[parent]?.domain.length ?? 1), 1);
+    const rows = Object.keys(cpt.table);
+    if (rows.length !== expectedRows) dimError = dimError || `${id}: ${rows.length}/${expectedRows} rows`;
+    for (const key of rows) {
+      const dist = cpt.table[key];
+      if (dist.length !== node.domain.length) {
+        dimError = dimError || `${id}[${key}]: ${dist.length} != ${node.domain.length}`;
+        break;
+      }
+      const sum = dist.reduce((a, b) => a + b, 0);
+      if (Math.abs(sum - 1) > 1e-9) {
+        normError = normError || `${id}[${key}] sums to ${sum.toFixed(6)}`;
+        break;
+      }
+      if (dist.some((v) => !(v >= 0 && v <= 1))) {
+        probError = probError || `${id}[${key}] has a value outside [0,1]`;
+        break;
+      }
+    }
+  }
+  add("CPT rows match the declared parent dimensions", dimError === "", dimError || "all tables fully populated", "one row per parent-state combination");
+  add("every probability is inside [0,1]", probError === "", probError || "all probabilities valid", "no p < 0 or p > 1");
+  add("every CPT row normalises to 1", normError === "", normError || "all rows sum to 1", "each row sums to 1");
+
+  const badPass = ids.filter((id) => !["micro", "town", "feedback"].includes(NODE_PASS[id] ?? ""));
+  add(
+    "every node declares a valid evaluation pass",
+    badPass.length === 0,
+    badPass.join(", ") || `${ids.length} nodes scheduled`,
+    "micro / town / feedback",
+  );
+
+  return checks;
+}
+
+/** Throw when the network is not a valid dynamic graph. */
+export function assertValidBnGraph(bn: Bn): void {
+  const failed = validateBnGraph(bn).filter((check) => !check.passed);
+  if (failed.length > 0) {
+    throw new Error(
+      `Invalid Bayesian network: ${failed.map((f) => `${f.check} (${f.observed})`).join("; ")}`,
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -995,6 +1393,11 @@ export function sampleRoots(c: CompiledBn, states: Int32Array, fixed: Uint8Array
   for (const id of ROOT_NODE_IDS) {
     const idx = c.index[id];
     if (idx === undefined || fixed[idx]) continue;
+    // Exogenous shock roots default to "none" WITHOUT drawing: they are always
+    // supplied as evidence by the engine, and skipping the draw keeps a run that
+    // configures no scenario byte-identical to the pre-shock network (no uniform
+    // is consumed, so no established node's sample shifts).
+    if (EXTERNAL_SHOCK_NODE_IDS.includes(id)) continue;
     states[idx] = drawNode(c, idx, states, rng.next());
   }
 }
@@ -1092,7 +1495,9 @@ export function causalAttribution(
 ): CausalFactor[] {
   const tIdx = c.index[target];
   const targetN = c.domainSize[tIdx];
-  const candidates = Object.keys(DOMAINS).filter((id) => id !== target && !AGGREGATE_NODES.includes(id));
+  const candidates = Object.keys(DOMAINS).filter(
+    (id) => id !== target && !AGGREGATE_NODES.includes(id) && !EXTERNAL_SHOCK_NODE_IDS.includes(id),
+  );
   const joint = candidates.map(() => new Float64Array(2 * targetN));
   const tCounts = new Float64Array(targetN);
   const states = new Int32Array(c.ids.length);
