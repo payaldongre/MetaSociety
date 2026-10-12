@@ -25,7 +25,20 @@ export {
 } from "./census";
 export { GENERATOR_VERSION, clonePopulation, generatePopulation, populationComposition, validatePopulation } from "./population";
 export {
+  CSV_FIELD_CROSSWALK,
+  CSV_KNOWN_LIMITATIONS,
+  POPULATION_CSV_SOURCE,
+  POPULATION_GENERATOR_SOURCE,
+  POPULATION_SOURCES,
+  populationSourceSummary,
+  type CrosswalkStatus,
+  type CsvFieldCrosswalk,
+  type PopulationSource,
+} from "./population-source";
+export {
   AGGREGATE_NODES,
+  BN_EXTENSION_NODES,
+  BN_NODE_COUNT,
   BN_VERSION,
   DOMAINS,
   DOMAIN_LEGENDS,
@@ -89,12 +102,15 @@ export {
   DE_BOUNDS,
   OBJECTIVE_LABELS,
   REFERENCE_BUDGET,
+  assertBriefReachesEngine,
   decodeVector,
   encodePolicy,
   getPopulation,
   intervalFor,
   rampFor,
+  runPolicyBriefSimulation,
   runSimulation,
+  type BriefRunOverrides,
   type SimulationOptions,
 } from "./simulate";
 export {
@@ -151,6 +167,7 @@ export {
 } from "./governance";
 export {
   DOMAIN_LABELS,
+  PolicyFeasibilityError,
   briefToPolicyVector,
   legalBasisFor,
   validateBudget,
@@ -176,14 +193,20 @@ export {
 } from "./calibration-ledger";
 export {
   BACKTEST_CASES,
+  BACKTEST_ENGINE_DEFAULTS,
   checkNoLeakage,
+  enginePredictor,
   runBacktest,
   runBacktestSuite,
+  runEngineBacktestSuite,
   summariseBacktests,
   type BacktestCase,
+  type BacktestEngineOptions,
+  type BacktestEngineOutcome,
   type BacktestPrediction,
   type BacktestResult,
   type BacktestSummary,
+  type EngineMetricMapping,
 } from "./backtest";
 export {
   FOOTFALL_BANDS,

@@ -33,14 +33,34 @@ produces an outcome, a magnitude, or a chart series.
   households, children 0–6, SC/ST share, literacy by gender and worker counts by gender). The
   Census fields are verified; income, sector, education and housing are modelled, and
   `src/simulation/census.ts` states which is which field by field.
-- **Bayesian network** — 29 nodes, with conditional probability tables counted from the population
-  wherever a node is observable, and documented priors elsewhere. Interventions use `do(...)` by
-  graph mutilation, so a policy effect is causal rather than a conditional read.
+- **Bayesian network** — a discrete DAG whose node count is read from the registry
+  (`BN_NODE_COUNT`, currently **30 nodes**, including the two-node healthcare extension), with
+  conditional probability tables counted from the population wherever a node is observable, and
+  documented priors elsewhere. Interventions use `do(...)` by graph mutilation, so a policy effect
+  is causal rather than a conditional read. The count is derived from code, not hardcoded, so it
+  cannot drift from the implementation again.
 - **Multi-period** — the network is rolled one period at a time with agent state carried forward
   (employment, savings stock, sentiment, trust, migration intent, skills), and each instrument has
   its own channel lag so the trajectory does not move in lock-step.
 - **Counterfactual baseline** — the no-policy path is produced by the same engine on the same
   population, so a result always ships with its own comparison instead of a hardcoded series.
+- **Feasibility gate** — a policy runs from a structured **policy brief** (governance roles, budget
+  line items, implementation phases), never from bare sliders. The engine re-runs
+  `validatePolicyBrief` before any simulation and refuses a brief that fails a blocking governance,
+  budget or timeline requirement. Budget and duration are derived from the brief; only intensity and
+  the allocation split remain optional overrides. The gate reuses the governance registry — it does
+  not invent statutory limits, and the ₹20 crore simulation safety limit stays a model assumption.
+- **Uncertainty wording** — the seed ensemble reports the **share of simulated seed runs** on which a
+  metric improves, and an **empirical simulation interval**, never a statistical probability or
+  confidence level.
+- **Historical backtest** — each documented case is run through this same engine using only
+  pre-policy information, then compared with the observed outcome. Direction agreement, magnitude,
+  interval containment, evidence strength, calibration status and leakage are reported separately;
+  direction alone is never labelled an accurate prediction, and a metric the engine does not compute
+  is reported as *not predicted* rather than given a fabricated mapping.
+- **Population source** — the deterministic in-memory generator is canonical; the shipped
+  `pandharpur_synthetic_population.csv` is a validated external artifact. They are never silently
+  mixed; the field-level crosswalk and its limitations are recorded in code and shown in the UI.
 - **Zone incidence** — East / West / North / South are a partition of all 33 wards reported *after*
   the run, so the output can be "town-wide +6%, but North +11% and East +1.2%".
 - **Policy search** — Differential Evolution (with NSGA-II non-dominated sorting) searches
@@ -56,8 +76,10 @@ produces an outcome, a magnitude, or a chart series.
   directions, the identities and reproducibility, and reports exactly which checks passed.
 
 ```bash
-bun run test     # 45 tests: population, network directions, identities, determinism, search, zones,
-                 # spec definition-of-done, and page/persistence wiring
+bun run test     # 142 tests: population, network directions, identities, determinism, search, zones,
+                 # governance/feasibility gate, engine-backed backtesting, population-source
+                 # provenance, doc/terminology consistency, spec definition-of-done, and
+                 # page/persistence wiring
                  # two vitest projects (app / simulation) — see vitest.config.ts; the engine suite is CPU-heavy
 bun run dev      # app; the Simulation Lab page renders engine output, not mock data
 ```
@@ -65,8 +87,12 @@ bun run dev      # app; the Simulation Lab page renders engine output, not mock 
 The full specification, the reasoning behind each decision, and the verified-data build spec are
 in [`SIMULATION_LAB_SPEC.md`](./SIMULATION_LAB_SPEC.md). The engine's acceptance tests live in
 `src/simulation/__tests__/engine.test.ts`, with the build spec's definition-of-done checks in
-`src/simulation/__tests__/spec-dod.test.ts` and the de-mocked page/persistence wiring checks in
-`src/test/dataWiring.test.ts`. Real town datasets come from `src/lib/townData.ts`.
+`src/simulation/__tests__/spec-dod.test.ts`, the governance/feasibility gate and valid/invalid policy
+configs in `src/simulation/__tests__/policy-gate.test.ts`, the engine-backed backtest in
+`src/simulation/__tests__/backtest-engine.test.ts`, the population-source provenance in
+`src/simulation/__tests__/population-source.test.ts`, the node-count/terminology guards in
+`src/simulation/__tests__/doc-consistency.test.ts`, and the de-mocked page/persistence wiring checks
+in `src/test/dataWiring.test.ts`. Real town datasets come from `src/lib/townData.ts`.
 Saved runs persist to the browser store (and to Supabase when it is configured) via
 `src/lib/runStore.ts`; the Dashboard, Data Intelligence, Alerts and Saved Reports pages read real
 engine/population data, not mock samples.
@@ -92,7 +118,7 @@ npm install                   # fallback: no Bun required (~586 packages)
 bunx tsc -b --noEmit
 
 # 4. Run the test suite
-bun run test                  # 45 tests, ~50-60s
+bun run test                  # 142 tests, ~2-3 min (the engine suite rolls the full population)
 npm test                      # same thing without Bun
 
 # 5. Start the app
@@ -105,10 +131,14 @@ bun run build && bun run preview
 ### Notes that matter
 
 - **Let the tests run alone.** The Simulation Lab suite rolls a full 98,923-agent trajectory.
-  `vitest.config.ts` pins it to a single forked worker with a 300-second timeout; running it
-  alongside a dev server or other CPU-heavy work can starve Vitest's worker heartbeat and make a
-  passing suite exit non-zero. Expect roughly a minute. That cost is the engine actually
-  simulating citizens, not a hang.
+  `vitest.config.ts` pins it to forked workers with a 300-second timeout; running it alongside a dev
+  server or other CPU-heavy work can starve Vitest's worker heartbeat and make a passing suite exit
+  non-zero. On a quiet machine the current suite reports **142 tests passed** across 14 files, but
+  the process may still exit `1` with a `[vitest-worker]: Timeout calling "onTaskUpdate"` unhandled
+  error — that is the heartbeat problem, not a failed assertion. **Report assertion status and
+  process exit status separately**: "142/142 passed, exit 1 (worker heartbeat)" means the engine is
+  correct and the runner is starved. Expect 2–3 minutes. That cost is the engine actually simulating
+  citizens, not a hang.
 - **The build prints one advisory warning, not an error.** The main bundle is ~1.16 MB (~331 KB
   gzipped), above Vite's 500 KB advisory threshold. Nothing is broken; code-splitting is future
   work.

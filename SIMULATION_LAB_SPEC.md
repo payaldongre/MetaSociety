@@ -79,7 +79,7 @@ GDP growth ←───────── Public sentiment (happiness) → Prote
 - **Town-level output** = a weighted aggregation of all profile-level outputs, weighted by how many real citizens fall into each profile — so a profile covering 8,000 citizens correctly outweighs one covering 80.
 - **This stage is what makes the Simulation Lab decisive rather than generative** (Section 0): its output is a probability distribution over an outcome, computed by graph inference from real conditional probabilities, not sampled from a language model's sense of what sounds plausible.
 
-> **As built.** Implemented in TypeScript, not Python: `src/simulation/bn.ts` (29 nodes). CPTs are counted directly from the population for every node whose parents are observable, with documented priors only for the genuinely unobservable ones (latent demand, sector output, the aggregate bands, and the policy parameters themselves). Every table records its provenance. Interventions use `do(...)` by graph mutilation (`withIntervention`), so a policy effect is causal rather than a conditional read. A microservice split is not required to satisfy this section; the acceptance checks are what matter, and they live in `src/simulation/__tests__/engine.test.ts`.
+> **As built.** Implemented in TypeScript, not Python: `src/simulation/bn.ts` (30 nodes; the count is derived as `BN_NODE_COUNT`, including the two-node healthcare extension). CPTs are counted directly from the population for every node whose parents are observable, with documented priors only for the genuinely unobservable ones (latent demand, sector output, the aggregate bands, and the policy parameters themselves). Every table records its provenance. Interventions use `do(...)` by graph mutilation (`withIntervention`), so a policy effect is causal rather than a conditional read. A microservice split is not required to satisfy this section; the acceptance checks are what matter, and they live in `src/simulation/__tests__/engine.test.ts`.
 
 ---
 
@@ -111,7 +111,7 @@ You referenced Anthropic's [*Scenarios for our Economic Future*](https://www.ant
 
 One thing evaluators or teammates may push to imitate that shouldn't be: Anthropic's model is backed by a peer-reviewed technical report with named external economist reviewers and a national survey of 10,000+ respondents. Meta Society's Bayesian Network is not at that evidentiary bar and should never be presented as if it were — the honest framing is "a structured, inspectable model calibrated against real Census-anchored data for one pilot town," which is a legitimate and defensible claim on its own, without borrowing credibility that belongs to a much larger research effort.
 
-> **As built.** The AI economic scenario presets (Modest / Substantial / Extreme) have been deleted — no selector, and no lever reaches the engine; every headline metric is reported as a probability-style aggregate over a fixed internal 12-round seed ensemble ("X% probability this policy improves the metric; median effect; 90% interval"), not a decorated point estimate; every number carries a provenance tag via the Data & provenance tab; and the permanent **Model Limitations** panel renders on the Simulation Lab with named, specific limitations. The "Where this policy lands" panel classifies each metric as directly affected, spillover, or unaffected from the run's own deltas, and lists the engine's warnings as the newly-emergent second-order effects.
+> **As built.** The AI economic scenario presets (Modest / Substantial / Extreme) have been deleted — no selector, and no lever reaches the engine; every headline metric is reported as a **share of simulated seed runs showing improvement**, with an **empirical simulation interval** over a fixed internal 12-round seed ensemble (never a statistical probability, confidence level or calibrated likelihood), not a decorated point estimate; every number carries a provenance tag via the Data & provenance tab; and the permanent **Model Limitations** panel renders on the Simulation Lab with named, specific limitations. The "Where this policy lands" panel classifies each metric as directly affected, spillover, or unaffected from the run's own deltas, and lists the engine's warnings as the newly-emergent second-order effects.
 
 ---
 
@@ -179,8 +179,8 @@ This section records what is implemented against the phases above, and what rema
 
 | Spec | As built |
 |---|---|
-| `pandharpur_synthetic_population.csv` as a file artifact | Generated in memory, deterministically, from the published Census 2011 totals (`src/simulation/population.ts`), with the verified figures asserted on every run. No 98,923-row artifact to drift from the code; `population.manifest` hashes the generation inputs. |
-| `pgmpy` Python Bayesian network (`backend/agent_simulation/network.py`) | `src/simulation/bn.ts` — a 29-node discrete DAG with a hand-written exact-inference path. CPTs counted from the population where observable; documented priors only where not. |
+| `pandharpur_synthetic_population.csv` as a file artifact | The canonical population is generated **in memory**, deterministically, from the published Census 2011 totals (`src/simulation/population.ts`), with the verified figures asserted on every run; `population.manifest` hashes the generation inputs. The CSV **is retained** as a validated external source artifact (same Census anchors), but it is NOT loaded as the engine population: its vocabularies differ (no `bpl` income class, different age bands and sector names), so a crosswalk would be lossy. That relationship is recorded in `src/simulation/population-source.ts` and enforced by a test. |
+| `pgmpy` Python Bayesian network (`backend/agent_simulation/network.py`) | `src/simulation/bn.ts` — a discrete DAG whose actual node count is `BN_NODE_COUNT` (**30**, including `HealthInsurance`/`HealthBurden`) with a hand-written exact-inference path. CPTs counted from the population where observable; documented priors only where not. |
 | `scipy` / custom DE (`backend/agent_simulation/optimizer.py`) | `src/simulation/de.ts` — DE/rand/1/bin + NSGA-II non-dominated sort + crowding distance, with a random-search control. |
 | `supabase/functions/simulate` + the `simulations` migration | Not built as an Edge Function. The engine runs in the browser; persistence is `src/lib/runStore.ts` (browser store always; Supabase insert when `VITE_SUPABASE_URL`/`VITE_SUPABASE_PUBLISHABLE_KEY` are set and a user id is available). This workspace has no Supabase project configured, so the remote path is present but not verifiable end to end — stated rather than implied. |
 
@@ -189,11 +189,11 @@ This section records what is implemented against the phases above, and what rema
 | Phase | Status | Evidence |
 |---|---|---|
 | 1–3 Citizen-level population, profile cells | Done | `population.ts`; the suite asserts 98,923 agents, exact Census totals, >100 populated `(incomeClass, workerStatus, sector, ward)` cells, and no dropped citizen. |
-| 4 Bayesian network | Done | `bn.ts` — 29 nodes, `do(...)` by graph mutilation, posterior marginals by ancestral sampling, causal attribution by mutual information. |
+| 4 Bayesian network | Done | `bn.ts` — 30 nodes (`BN_NODE_COUNT`), `do(...)` by graph mutilation, posterior marginals by ancestral sampling, causal attribution by mutual information. |
 | 5 Direction validation | Done | `validateBnDirection` is run on every run and its checks appear in the evidence pack; the suite asserts every documented direction holds with no failures. |
 | 6 Differential Evolution | Done | `de.ts`; the suite asserts convergence toward a known optimum, seed determinism, a correct non-dominated front, and a random-search control. |
 | 7 Service boundary | Not built (browser engine instead) | The engine is pure, so moving it behind a service is a port, not a rewrite. |
-| 8 Frontend UX (§5) | Done | `src/pages/SimulationLab.tsx` — scenario tiers, 90% credible intervals, provenance rail, "Where this policy lands" channel breakdown, permanent Model Limitations panel. |
+| 8 Frontend UX (§5) | Done | `src/pages/SimulationLab.tsx` — structured **policy brief** (all six governance roles, budget line items, implementation phases), empirical simulation intervals (not confidence intervals), provenance rail, "Where this policy lands" channel breakdown, engine-backed historical backtest panel, population-source caveat, permanent Model Limitations panel. (The earlier scenario-tier presets were removed.) |
 | 9 Real numbers, no mock, persistence | Done | The Lab renders engine output only; Save writes real computed `effectiveness_score`/metrics through `runStore.ts`; grep for `mockData` in `src/pages` is clean. |
 | 10 Learned predictor (JEPA principle) | Not started | Deliberately post-launch; requires accumulated rollouts. |
 
@@ -208,3 +208,48 @@ Headline metrics are summations over the agent population and the stated identit
 3. **Literacy audit** against the primary Census 2011 PDF (effective vs crude definition — the alternative is retained in `census.ts` so the discrepancy stays visible).
 4. **Ward → zone mapping** replaced with sourced ward geography (currently population-balanced contiguous ranges, tagged `estimated`).
 5. **A learned predictor over accumulated rollouts**, in the non-generative spirit of Section 6.3.
+
+### 9.5 Revision notes (current state)
+
+This revision completed and recorded the following, all enforced by tests rather than prose:
+
+- **Policy feasibility is enforced in the engine.** The authoritative input is a structured
+  `PolicyBrief` (governance roles, budget line items, implementation phases).
+  `runPolicyBriefSimulation` and `runSimulation` (when a `brief` is attached) run
+  `validatePolicyBrief` — which reuses `validateGovernance` — *before any population work*, and a
+  brief with a blocking governance/budget/timeline problem throws `PolicyFeasibilityError` and never
+  reaches the simulation. The status vocabulary (`legally_feasible`, `conditionally_feasible`,
+  `requires_escalation`, `unsupported_by_authority`, `insufficient_evidence`) is preserved. No
+  statutory monetary ceiling is invented; the ₹20 crore simulation safety limit remains a model
+  assumption surfaced only as a condition.
+- **The historical backtest is engine-backed.** `enginePredictor` runs each case through the real
+  `runSimulation`, builds the model input only from `informationAvailableBefore` plus documented
+  defaults, and compares with the observed outcome afterwards. Direction agreement, magnitude error,
+  interval containment, evidence strength and calibration status stay separate. A metric the engine
+  does not compute (the Wari toll cost, seasonal footfall) is reported as **not predicted** — no
+  mapping is fabricated and no magnitude is invented. The Wari footfall case is treated as seasonal
+  baseline pressure, not as a policy effect.
+- **Uncertainty terminology is precise.** `MetricUncertainty` now reports `shareImproved` /
+  `shareChanged` over the internal seed ensemble and an empirical interval; UI and narratives say
+  "share of simulated seed runs", never "probability this policy improves", "confidence level" or
+  "calibrated likelihood".
+- **Node count is derived, not hardcoded.** `BN_NODE_COUNT` (currently 30, including the healthcare
+  extension) is computed from `NODE_REGISTRY`; a test asserts the docs quote the derived number so
+  the earlier undercount cannot recur.
+- **Population sources are not silently mixed.** `population-source.ts` records the in-memory
+  generator as canonical and the retained CSV as a validated external artifact, with a field-level
+  crosswalk and its limitations; a test validates the CSV's Census-agreeing fields and asserts the
+  limitations are documented.
+
+Remaining work is unchanged from §9.4, with two additions:
+
+6. **Supabase end-to-end** still needs real credentials and a signed-in user; the local store remains
+   the verified path.
+7. **Ward → zone geography** remains estimated (population-balanced contiguous ranges). No sourced
+   ward geometry is present, so none is invented.
+8. **Performance.** The full-population engine run is synchronous and CPU-bound. Moving heavy
+   simulation work into a Web Worker is *not* done here: it would need to preserve the exact
+   deterministic seeds, the accounting identities and the decision-engine boundary, and is only
+   worth attempting once the P0/P1 correctness work is settled. Headline population metrics are
+   never sampled or faked to make the UI faster; if worker offload is added it must run the same
+   full-population roll, not a reduced one.

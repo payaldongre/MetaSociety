@@ -446,10 +446,10 @@ describe("end-to-end simulation", () => {
   );
 
   it(
-    "reports an aggregated probability headline whose 90% band brackets its own single-seed point",
+    "reports a seed-ensemble share headline whose empirical interval brackets its own single-seed point",
     async () => {
       // Regression for the reported bug where one arbitrary seed's point value
-      // fell OUTSIDE its own displayed 90% interval. The headline is now an
+      // fell OUTSIDE its own displayed interval. The headline is now an
       // ensemble over the internal rounds, so the point estimate (which is one
       // member of that ensemble) must always sit inside the reported band.
       const result = await runSimulation(request(), { searchAgents: 100, intervalRounds: 2 });
@@ -458,11 +458,11 @@ describe("end-to-end simulation", () => {
         // A real distribution over the ensemble, not a single seed's value
         // presented as a probability.
         expect(u.seedCount).toBeGreaterThan(1);
-        expect(u.probabilityImproved).toBeGreaterThanOrEqual(0);
-        expect(u.probabilityImproved).toBeLessThanOrEqual(1);
+        expect(u.shareImproved).toBeGreaterThanOrEqual(0);
+        expect(u.shareImproved).toBeLessThanOrEqual(1);
         expect(u.p05Delta).toBeLessThanOrEqual(u.medianDelta + 1e-9);
         expect(u.medianDelta).toBeLessThanOrEqual(u.p95Delta + 1e-9);
-        // The headline's own single-seed point must be bracketed by the 90% band.
+        // The headline's own single-seed point must be bracketed by the empirical band.
         const pointDelta = result.point[key] - result.baseline[key];
         expect(u.p05Delta).toBeLessThanOrEqual(pointDelta + 1e-9);
         expect(pointDelta).toBeLessThanOrEqual(u.p95Delta + 1e-9);

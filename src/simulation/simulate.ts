@@ -42,6 +42,12 @@ import { lineageKeyFor } from "./lineage";
 import type { AggregateBands, PeriodLevels } from "./aggregate";
 import { CHANNEL_LAGS_MONTHS } from "./census";
 import {
+  PolicyFeasibilityError,
+  briefToPolicyVector,
+  validatePolicyBrief,
+  type PolicyBrief,
+} from "./policy-brief";
+import {
   BN_VERSION,
   applyEvidence,
   assertEvidenceIsUpstream,
@@ -799,6 +805,19 @@ export async function runSimulation(
   options: SimulationOptions = {},
 ): Promise<SimulationResult> {
   const warnings: string[] = [];
+
+  /*
+   * FEASIBILITY GATE — enforced by the engine, not only the UI.
+   *
+   * When the request carries the structured brief it came from, the full
+   * governance/budget/timeline gate is run HERE, before any population work.
+   * A blocking configuration (an authority that cannot decide the domain, a
+   * budget table that does not sum to its stated total, an impossible timeline)
+   * throws `PolicyFeasibilityError` and the engine never simulates it. This is
+   * the code-level enforcement the spec requires (spec §7, §26, §27).
+   */
+  if (request.brief) assertBriefReachesEngine(request.brief);
+
   const engine = options.decisionEngine ?? createDecisionEngine("rule");
   engine.reset();
   const onProgress = options.onProgress ?? (() => {});
@@ -996,7 +1015,7 @@ export async function runSimulation(
 
   // The DISPLAYED headline is the ensemble median, not one arbitrary seed's
   // value. This is what resolves the "point estimate outside its own displayed
-  // 90% interval" bug: a median is bracketed by the 5th and 95th percentiles by
+  // displayed-interval" bug: a median is bracketed by the 5th and 95th percentiles by
   // construction, for any number of seeds. The seed remains the reproducibility
   // mechanism — the chosen-seed trajectory is still reported in `trajectories`.
   const headlineMetrics = Object.fromEntries(
@@ -1012,7 +1031,8 @@ export async function runSimulation(
     }),
   ) as Record<MetricKey, number>;
 
-  /* 5b. Uncertainty: a probability-style headline over the seed ensemble. */
+  /* 5b. Uncertainty over the seed ensemble: share of runs improving + an
+     empirical interval. Deliberately NOT called a probability or confidence. */
   const uncertainty = Object.fromEntries(
     (Object.keys(treatedMetrics) as MetricKey[]).map((k) => {
       const deltas = samples.get(k)!.map((v) => v - baselineMetrics[k]);
@@ -1036,8 +1056,8 @@ export async function runSimulation(
         k,
         {
           seedCount: deltas.length,
-          probabilityImproved: deltas.length > 0 ? improved / deltas.length : 0,
-          probabilityChanged: deltas.length > 0 ? changed / deltas.length : 0,
+          shareImproved: deltas.length > 0 ? improved / deltas.length : 0,
+          shareChanged: deltas.length > 0 ? changed / deltas.length : 0,
           medianDelta: q(0.5),
           p05Delta: q(0.05),
           p95Delta: q(0.95),
@@ -1207,6 +1227,78 @@ export async function runSimulation(
 
   onProgress({ phase: "Complete", fraction: 1 });
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Feasibility-gated entry point (spec §7, §26, §27)                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run the feasibility gate and throw a readable, evaluator-facing error when a
+ * brief carries a blocker. Reuses `validatePolicyBrief`, which itself reuses
+ * `validateGovernance` — no validation logic is duplicated here.
+ */
+export function assertBriefReachesEngine(brief: PolicyBrief): void {
+  const feasibility = validatePolicyBrief(brief);
+  if (feasibility.simulationReady) return;
+  const reasons = feasibility.blockers.length
+    ? feasibility.blockers
+    : ["The brief did not pass the governance/budget/timeline gate."];
+  throw new PolicyFeasibilityError(
+    `Policy brief "${brief.title}" is not simulation-ready and was not sent to the engine: ${reasons.join("; ")}`,
+    feasibility,
+  );
+}
+
+export interface BriefRunOverrides {
+  townId?: string;
+  /** Optional engine overrides. Budget and duration are ALWAYS derived from the brief. */
+  intensity?: number;
+  allocation?: { housing: number; education: number; employment: number };
+  mode?: "single" | "optimize";
+  seed?: number;
+  zoneFilter?: SimulationRequest["zoneFilter"];
+}
+
+/**
+ * The authoritative way to run a policy: from the structured brief.
+ *
+ * This is the path the Simulation Lab uses. It gates the brief, derives the
+ * engine's budget and duration from the brief itself (never from a bare
+ * slider), maps it onto a `PolicyVector`, and only then calls `runSimulation`.
+ * An infeasible brief never reaches the simulation engine.
+ */
+export async function runPolicyBriefSimulation(
+  brief: PolicyBrief,
+  overrides: BriefRunOverrides = {},
+  options: SimulationOptions = {},
+): Promise<SimulationResult> {
+  const feasibility = validatePolicyBrief(brief);
+  if (!feasibility.simulationReady) {
+    throw new PolicyFeasibilityError(
+      `Policy brief "${brief.title}" is not simulation-ready: ${feasibility.blockers.join("; ") || "blocked"}`,
+      feasibility,
+    );
+  }
+  const mapping = briefToPolicyVector(
+    brief,
+    overrides.allocation ?? { housing: 0.3, education: 0.3, employment: 0.4 },
+    clamp01(overrides.intensity ?? 0.65),
+  );
+  const policy: PolicyVector = { ...mapping };
+  return runSimulation(
+    {
+      townId: overrides.townId ?? "pandharpur_in_mh",
+      policy,
+      mode: overrides.mode ?? "single",
+      seed: overrides.seed ?? 20260101,
+      bnVersion: BN_VERSION,
+      zoneFilter: overrides.zoneFilter ?? "all",
+      // Defence in depth: the gate runs again inside runSimulation.
+      brief,
+    },
+    options,
+  );
 }
 
 /* ------------------------------------------------------------------ */

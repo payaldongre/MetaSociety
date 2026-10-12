@@ -329,6 +329,16 @@ function policyParentsFor(id: string): string[] {
  */
 export const MICRO_NODES = MICRO_SCHEDULE_ORDER.filter((id) => !EXTENSION_NODES.has(id));
 
+/**
+ * The ACTUAL registered node count, derived from the registry rather than
+ * hardcoded in prose. Documentation and tests read this, so the earlier node
+ * undercount cannot recur: the number is whatever `DOMAINS` currently holds.
+ */
+export const BN_NODE_COUNT = NODE_REGISTRY.length;
+
+/** Nodes contributed by the healthcare extension (pass 1), for the docs. */
+export const BN_EXTENSION_NODES = NODE_REGISTRY.filter((n) => n.extension).map((n) => n.id);
+
 export const TOWN_NODES = NODE_REGISTRY.filter((n) => n.pass === "town").map((n) => n.id);
 
 export const FEEDBACK_NODES = NODE_REGISTRY.filter((n) => n.pass === "feedback").map((n) => n.id);

@@ -62,8 +62,10 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  BACKTEST_CASES,
   BN_VERSION,
   CHANNELS,
+  CSV_KNOWN_LIMITATIONS,
   CENSUS,
   DECLARED_CHANNELS,
   FIELD_LEDGER,
@@ -73,7 +75,6 @@ import {
   METRIC_KEYS,
   METRIC_LABELS,
   METRIC_UNITS,
-  REFERENCE_BUDGET,
   TOWN_DISTRICT,
   TOWN_NAME,
   channelsUseAllocation,
@@ -85,11 +86,17 @@ import {
   lineageKeyFor,
   pendingChannelNodes,
   populationComposition,
-  runSimulation,
+  runPolicyBriefSimulation,
+  runEngineBacktestSuite,
+  briefToPolicyVector,
+  populationSourceSummary,
   selectedChannels,
   type ChannelDefinition,
   type MetricKey,
   type MetricUncertainty,
+  type BacktestSummary,
+  type PolicyBrief,
+  type PolicyFeasibility,
   type PolicyVector,
   type ProvenanceTag,
   type SimulationResult,
@@ -201,7 +208,7 @@ function StatCard({
   const delta = value - baseline;
   const Icon = Math.abs(delta) < 1e-9 ? Info : isBetter(metricKey, delta) ? TrendingUp : TrendingDown;
   const lowers = LOWER_IS_BETTER.includes(metricKey);
-  const improvedPct = Math.round(uncertainty.probabilityImproved * 100);
+  const improvedPct = Math.round(uncertainty.shareImproved * 100);
   const single = uncertainty.seedCount <= 1;
   return (
     <div className="rounded-lg border bg-card p-3">
@@ -213,12 +220,12 @@ function StatCard({
       <p className={`text-xs font-medium ${improvedPct >= 50 ? "text-success" : improvedPct > 0 ? "text-warning" : "text-muted-foreground"}`}>
         {single
           ? `${fmtDelta(metricKey, delta)} vs no-policy`
-          : `${improvedPct}% probability this policy ${lowers ? "reduces" : "increases"} ${METRIC_LABELS[metricKey].toLowerCase()}`}
+          : `${improvedPct}% of simulated seed runs show ${lowers ? "a reduction" : "an increase"} in ${METRIC_LABELS[metricKey].toLowerCase()}`}
       </p>
       <p className="mt-0.5 text-[11px] text-muted-foreground">
         {single
-          ? "Too few confidence runs to state a probability — raise the confidence-run count"
-          : `Median effect ${fmtDelta(metricKey, uncertainty.medianDelta)} · 90% interval ${fmtDelta(metricKey, uncertainty.p05Delta)} to ${fmtDelta(metricKey, uncertainty.p95Delta)} over ${uncertainty.seedCount} seeds`}
+          ? "Only one seed run: no share to report"
+          : `Median effect ${fmtDelta(metricKey, uncertainty.medianDelta)} · empirical simulation interval ${fmtDelta(metricKey, uncertainty.p05Delta)} to ${fmtDelta(metricKey, uncertainty.p95Delta)} over ${uncertainty.seedCount} seed runs (not a statistical confidence interval)`}
       </p>
     </div>
   );
@@ -289,9 +296,18 @@ export default function SimulationLab() {
   const [channelIds, setChannelIds] = useState<string[]>(["INCOME_SUPPORT"]);
   const [policyName, setPolicyName] = useState("Pilgrimage-corridor employment subsidy");
   const [intensityPct, setIntensityPct] = useState([65]);
-  const [budgetCrore, setBudgetCrore] = useState([12]);
-  const [durationMonths, setDurationMonths] = useState([24]);
   const [alloc, setAlloc] = useState<[number[], number[], number[]]>([[30], [40], [30]]);
+  /**
+   * The structured brief emitted by the policy-brief panel. It is the
+   * AUTHORITATIVE input: budget and duration come from it, and the feasibility
+   * gate runs before the engine.
+   */
+  const [brief, setBrief] = useState<PolicyBrief | null>(null);
+  const [briefFeasibility, setBriefFeasibility] = useState<PolicyFeasibility | null>(null);
+  const onBriefChange = useCallback((b: PolicyBrief, f: PolicyFeasibility) => {
+    setBrief(b);
+    setBriefFeasibility(f);
+  }, []);
   const [optimize, setOptimize] = useState(false);
   const [engineKind, setEngineKind] = useState<"rule" | "jev" | "llm">("rule");
   const [seed, setSeed] = useState("20260101");
@@ -301,6 +317,26 @@ export default function SimulationLab() {
   /** Previous-best run in this lineage, for the second comparison mode (Part C3). */
   const [lineageBest, setLineageBest] = useState<SavedRun | null>(null);
   const [lineageSize, setLineageSize] = useState(0);
+
+  /* --- engine-backed historical backtest (spec §16, §17) --- */
+  const [backtest, setBacktest] = useState<{ representedCount: number; summary: BacktestSummary; notRepresented: string[] } | null>(null);
+  const [backtestRunning, setBacktestRunning] = useState(false);
+
+  const runBacktest = useCallback(async () => {
+    setBacktestRunning(true);
+    try {
+      const { outcomes, summary } = await runEngineBacktestSuite({ simulation: { intervalRounds: 1, searchAgents: 60 } });
+      setBacktest({
+        representedCount: outcomes.filter((o) => o.represented).length,
+        summary,
+        notRepresented: outcomes.filter((o) => !o.represented).map((o) => `${o.result.metric} (${o.caseId})`),
+      });
+    } catch (error) {
+      toast.error("Backtest failed", { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBacktestRunning(false);
+    }
+  }, []);
 
   /* --- run state --- */
   const [running, setRunning] = useState(false);
@@ -343,6 +379,24 @@ export default function SimulationLab() {
     return counts;
   }, []);
 
+  // The brief carries the authoritative budget/timeline/governance. Its content
+  // is part of the run signature, so changing a line item, a phase or a role
+  // marks the displayed results stale exactly as a slider change does.
+  const briefSignature = useMemo(
+    () =>
+      brief
+        ? JSON.stringify({
+            total: brief.statedTotalInr,
+            roles: brief.governance,
+            budget: brief.budgetLineItems,
+            phases: brief.phases,
+            domains: brief.domains,
+            channels: brief.channelIds,
+          })
+        : "none",
+    [brief],
+  );
+
   // A signature of every input that changes the result. Compared against the
   // signature captured when the last run completed, so the UI can warn when the
   // displayed numbers belong to a previous configuration.
@@ -352,24 +406,13 @@ export default function SimulationLab() {
         channelIds,
         policyName,
         intensityPct,
-        budgetCrore,
-        durationMonths,
         alloc,
         optimize,
         engineKind,
         seed,
+        briefSignature,
       }),
-    [
-      alloc,
-      budgetCrore,
-      durationMonths,
-      engineKind,
-      intensityPct,
-      optimize,
-      policyName,
-      channelIds,
-      seed,
-    ],
+    [alloc, engineKind, intensityPct, optimize, policyName, channelIds, seed, briefSignature],
   );
 
   // Allocation shares are normalised to sum to 1 before the run; show the
@@ -404,19 +447,27 @@ export default function SimulationLab() {
     await new Promise((resolve) => window.setTimeout(resolve, 30));
 
     try {
+      // THE FEASIBILITY GATE. The engine enforces this too, but checking here
+      // gives the evaluator the reasons immediately and avoids a doomed run.
+      if (!brief || !briefFeasibility?.simulationReady) {
+        const reason =
+          briefFeasibility?.blockers.join("; ") ||
+          "the policy brief is not simulation-ready yet — complete the brief above.";
+        throw new Error(`Blocked by the governance/budget/timeline gate: ${reason}`);
+      }
+
       const allocTotal = alloc[0][0] + alloc[1][0] + alloc[2][0] || 1;
-      const policy: PolicyVector = {
-        channelIds,
-        name: policyName.trim() || "Untitled policy",
-        intensity: intensityPct[0] / 100,
-        budget: budgetCrore[0] * 1e7,
-        durationMonths: durationMonths[0],
-        allocation: {
-          housing: alloc[0][0] / allocTotal,
-          education: alloc[1][0] / allocTotal,
-          employment: alloc[2][0] / allocTotal,
-        },
+      const allocation = {
+        housing: alloc[0][0] / allocTotal,
+        education: alloc[1][0] / allocTotal,
+        employment: alloc[2][0] / allocTotal,
       };
+      const intensity = intensityPct[0] / 100;
+
+      // Budget and duration are DERIVED from the brief by this call; the sliders
+      // above can only override intensity and allocation.
+      const mapped = briefToPolicyVector(brief, allocation, intensity);
+      const policy: PolicyVector = { ...mapped };
       lastPolicyRef.current = policy;
 
       // Part C: this run's lineage — same channel set AND same parameter band.
@@ -429,13 +480,13 @@ export default function SimulationLab() {
         .sort((a, b) => b.effectivenessScore - a.effectivenessScore);
       const lineageSeeds = history.slice(0, 8).map((r) => encodePolicy(r.policy));
 
-      const res = await runSimulation(
+      const res = await runPolicyBriefSimulation(
+        brief,
         {
-          townId: "pandharpur_in_mh",
-          policy,
+          intensity,
+          allocation,
           mode: optimize ? "optimize" : "single",
           seed: Number.isFinite(parsedSeed) ? parsedSeed : 20260101,
-          bnVersion: BN_VERSION,
           zoneFilter: "all",
         },
         {
@@ -468,14 +519,12 @@ export default function SimulationLab() {
     }
   }, [
     alloc,
-    budgetCrore,
+    brief,
+    briefFeasibility,
     configSignature,
-    durationMonths,
     engineKind,
     intensityPct,
     optimize,
-    policyName,
-    channelIds,
     seed,
   ]);
 
@@ -646,7 +695,7 @@ export default function SimulationLab() {
               )}
             </div>
 
-            <PolicyBriefPanel channelIds={channelIds} />
+            <PolicyBriefPanel channelIds={channelIds} policyName={policyName} onBriefChange={onBriefChange} />
 
             {/* The numeric sliders are DEMOTED into an advanced section (spec §27):
                 the primary workflow is the structured policy brief above, and the
@@ -656,36 +705,17 @@ export default function SimulationLab() {
                 Advanced numeric controls (optional override)
               </summary>
               <div className="mt-3 space-y-4">
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              Budget and duration are DERIVED from the brief&apos;s line items and phase dates — they are not controls
+              here, so they cannot bypass the brief. Only intensity and the allocation split may be overridden, and the
+              feasibility gate still applies to the brief either way.
+            </p>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Intensity</Label>
                 <span className="text-xs font-medium text-card-foreground">{intensityPct[0]}%</span>
               </div>
               <Slider value={intensityPct} onValueChange={setIntensityPct} min={5} max={100} step={5} />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs">Budget</Label>
-                <span className="text-xs font-medium text-card-foreground">
-                  {fmtInrCrore(budgetCrore[0] * 1e7)}
-                </span>
-              </div>
-              <Slider value={budgetCrore} onValueChange={setBudgetCrore} min={1} max={20} step={0.5} />
-              <p className="text-[11px] text-muted-foreground">
-                Reference budget for banding {fmtInrCrore(REFERENCE_BUDGET)}
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs">Duration</Label>
-                <span className="text-xs font-medium text-card-foreground">{durationMonths[0]} months</span>
-              </div>
-              <Slider value={durationMonths} onValueChange={setDurationMonths} min={3} max={60} step={3} />
-              <p className="text-[11px] text-muted-foreground">
-                {Math.max(1, Math.round(durationMonths[0] / 3))} simulated periods, 3 months each
-              </p>
             </div>
 
             {usesAllocation ? (
@@ -782,7 +812,17 @@ export default function SimulationLab() {
               </p>
             </div>
 
-            <Button className="w-full" onClick={run} disabled={running}>
+            {briefFeasibility && !briefFeasibility.simulationReady && (
+              <p className="text-[11px] leading-snug text-destructive">
+                This policy is blocked by the governance / budget / timeline gate. Fix the brief above before running —
+                a blocked policy is not sent to the engine.
+              </p>
+            )}
+            <Button
+              className="w-full"
+              onClick={run}
+              disabled={running || (briefFeasibility !== null && !briefFeasibility.simulationReady)}
+            >
               {running ? (
                 <>
                   <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary-foreground border-t-transparent" />
@@ -1636,6 +1676,95 @@ export default function SimulationLab() {
                     </Card>
                   </div>
 
+                  {/* Engine-backed historical backtest (spec §16, §17, §40D): each
+                      case goes through this same engine using only pre-policy
+                      information, then is compared with the documented outcome.
+                      Direction agreement is NEVER reported as an accurate
+                      prediction. */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">Historical backtest</CardTitle>
+                      <p className="text-xs text-muted-foreground">
+                        {BACKTEST_CASES.length} documented case(s) run through the engine with pre-policy information only.
+                        Cases whose observed metric the engine does not compute are reported as NOT PREDICTED.
+                      </p>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {!backtest && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={runBacktest} disabled={backtestRunning}>
+                            {backtestRunning ? "Running cases through the engine…" : "Run engine backtest"}
+                          </Button>
+                          <span className="text-[11px] text-muted-foreground">
+                            {BACKTEST_CASES.map((c) => c.id).join(" · ")}
+                          </span>
+                        </div>
+                      )}
+                      {backtest && (
+                        <>
+                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                            <div className="rounded-md border p-3">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Cases tested</p>
+                              <p className="text-sm font-medium text-card-foreground">{backtest.summary.total}</p>
+                            </div>
+                            <div className="rounded-md border p-3">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Direction agreements</p>
+                              <p className="text-sm font-medium text-card-foreground">
+                                {backtest.summary.directionAgreements}/{backtest.representedCount} predicted
+                              </p>
+                            </div>
+                            <div className="rounded-md border p-3">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Magnitude / interval checks</p>
+                              <p className="text-sm font-medium text-card-foreground">
+                                {backtest.summary.magnitudeChecks} / {backtest.summary.withinIntervalChecks}
+                              </p>
+                            </div>
+                            <div className="rounded-md border p-3">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Leakage failures</p>
+                              <p className={`text-sm font-medium ${backtest.summary.leakageFailures ? "text-destructive" : "text-card-foreground"}`}>
+                                {backtest.summary.leakageFailures}
+                              </p>
+                            </div>
+                          </div>
+                          <p className="text-[11px] leading-snug text-muted-foreground">{backtest.summary.note}</p>
+                          <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                            <span>
+                              Calibration:{" "}
+                              {Object.entries(backtest.summary.calibrationStatuses)
+                                .filter(([, n]) => n > 0)
+                                .map(([k, n]) => `${k} ${n}`)
+                                .join(", ")}
+                            </span>
+                            <span>
+                              Evidence:{" "}
+                              {Object.entries(backtest.summary.evidenceStrengths)
+                                .filter(([, n]) => n > 0)
+                                .map(([k, n]) => `${k} ${n}`)
+                                .join(", ")}
+                            </span>
+                          </div>
+                          {backtest.notRepresented.length > 0 && (
+                            <p className="text-[11px] leading-snug text-warning">
+                              Not predicted (metric not represented by the engine): {backtest.notRepresented.join("; ")}.
+                            </p>
+                          )}
+                          {backtest.summary.limitations.length > 0 && (
+                            <div className="space-y-1">
+                              {backtest.summary.limitations.map((l, i) => (
+                                <p key={i} className="text-[11px] leading-snug text-muted-foreground">
+                                  • {l}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          <Button size="sm" variant="ghost" onClick={runBacktest} disabled={backtestRunning}>
+                            Re-run
+                          </Button>
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
+
                   {result.warnings.length > 0 && (
                     <Card>
                       <CardHeader className="pb-2">
@@ -1657,6 +1786,26 @@ export default function SimulationLab() {
 
                 {/* ---------------- data ---------------- */}
                 <TabsContent value="data" className="space-y-4">
+                  {/* Population-source relationship (spec §1, §33). The generator
+                      is canonical; the CSV is a validated external artifact and
+                      is NOT silently mixed with it. */}
+                  <Card className="border-warning/30">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Database className="h-4 w-4 text-warning" />
+                        Population source
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-1.5">
+                      <p className="text-xs leading-snug text-muted-foreground">{populationSourceSummary()}</p>
+                      {CSV_KNOWN_LIMITATIONS.map((limitation, i) => (
+                        <p key={i} className="text-[11px] leading-snug text-muted-foreground">
+                          • {limitation}
+                        </p>
+                      ))}
+                    </CardContent>
+                  </Card>
+
                   <Card>
                     <CardHeader className="pb-2">
                       <CardTitle className="flex items-center gap-2 text-base">

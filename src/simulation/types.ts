@@ -11,6 +11,8 @@
 /* Spatial + demographic vocabularies                                  */
 /* ------------------------------------------------------------------ */
 
+import type { PolicyBrief } from "./policy-brief";
+
 export const ZONES = ["east", "west", "north", "south"] as const;
 export type Zone = (typeof ZONES)[number];
 
@@ -319,23 +321,41 @@ export interface Interval {
 }
 
 /**
- * Aggregated uncertainty for one metric across many random seeds (SPEC §6.8).
+ * Aggregated uncertainty for one metric across the internal seed ensemble
+ * (SPEC §6.8).
  *
- * The seed stays the reproducibility mechanism; what changes is what is
- * DISPLAYED. Instead of one arbitrary seed's point value plus a separate range,
- * a run reports a probability-style headline over the seed ensemble.
+ * TERMINOLOGY (deliberate, and enforced by a regression test). A small fixed
+ * ensemble of engine reruns is NOT a statistical probability, a confidence
+ * level or a calibrated likelihood. The fields below therefore describe the
+ * SHARE OF SIMULATED SEED RUNS on which the metric moved, and the deltas are an
+ * EMPIRICAL simulation interval over that internal ensemble — nothing more.
  */
 export interface MetricUncertainty {
+  /** Number of internal seed runs in the ensemble (including the headline run). */
   seedCount: number;
-  /** Share of seeds on which this metric improves against the no-policy baseline. */
-  probabilityImproved: number;
-  /** Share of seeds on which the metric moves materially in either direction. */
-  probabilityChanged: number;
+  /**
+   * Share of the simulated seed runs on which this metric improves against the
+   * no-policy baseline. NOT a probability that the policy will improve it.
+   */
+  shareImproved: number;
+  /** Share of seed runs on which the metric moves materially in either direction. */
+  shareChanged: number;
   /** Median effect (simulated minus baseline) over the seed ensemble. */
   medianDelta: number;
+  /**
+   * 5th–95th percentile of the per-run delta over the internal seed ensemble.
+   * An empirical simulation interval, not a population-confidence interval.
+   */
   p05Delta: number;
   p95Delta: number;
 }
+
+/**
+ * The single wording every surface must use for the seed ensemble. Kept in code
+ * so a misleading phrase cannot creep back into a component or a caption.
+ */
+export const SEED_ENSEMBLE_DISCLAIMER =
+  "Share of simulated seed runs showing improvement (a fixed internal ensemble), with an empirical simulation interval over those runs. This is not a statistical probability, confidence level or calibrated likelihood.";
 
 export interface PeriodResult {
   period: number;
@@ -375,6 +395,15 @@ export interface SimulationRequest {
   seed: number;
   bnVersion: string;
   zoneFilter?: Zone | "all";
+  /**
+   * The structured policy brief this policy came from, when there is one.
+   *
+   * When present, the engine re-runs the full feasibility gate (governance,
+   * budget identity, timeline) BEFORE any simulation work and refuses a brief
+   * with a blocker. The authoritative workflow passes a brief; the low-level
+   * tests and calibration harnesses may omit it and drive the engine directly.
+   */
+  brief?: PolicyBrief;
 }
 
 export interface TrajectoryPoint {
@@ -393,7 +422,7 @@ export interface SimulationResult {
 
   point: Record<MetricKey, number>;
   intervals: Record<MetricKey, Interval>;
-  /** Probability-style headline aggregated over the random-seed ensemble. */
+  /** Seed-ensemble headline: share of runs improving, plus an empirical interval. */
   uncertainty: Record<MetricKey, MetricUncertainty>;
   /** Lineage this run belongs to (instrument + parameter-similarity bucket). */
   lineageKey: string;

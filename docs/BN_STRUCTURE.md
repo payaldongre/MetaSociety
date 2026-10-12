@@ -9,7 +9,9 @@ _Educational reference for the Inference Lab model_
 > file must change with it; the Simulation Lab's **Model structure** tab renders
 > the same data from these definitions so it cannot drift.
 
-`BN_VERSION = "1.0.0"`. There are **29 nodes**. Inference is ancestral
+`BN_VERSION = "1.1.0"`. The node count is **derived from the registry** as
+`BN_NODE_COUNT` (currently **30 nodes**, including the two-node healthcare
+extension `HealthInsurance` / `HealthBurden`). Inference is ancestral
 (forward) sampling, exact for this query pattern because all evidence sits on
 roots or near-roots (the runtime guard `assertEvidenceIsUpstream` enforces it).
 
@@ -22,6 +24,13 @@ roots or near-roots (the runtime guard `assertEvidenceIsUpstream` enforces it).
 | **assumed** | No observable parent: a documented `PRIORS` distribution. |
 | **derived** | Set deterministically from population totals at runtime (the aggregate bands); its stored table is a uniform placeholder that is overridden by evidence every period. |
 | **intervention** | Built by `withIntervention` (`do(...)`): a point mass. |
+
+> **As-built corrections (current revision).** `BN_VERSION` is `1.1.0` and the actual node count is
+> `BN_NODE_COUNT` (**30**), including the healthcare extension (`HealthInsurance` / `HealthBurden`).
+> The `ScenarioExposure` row in the table below is **historical**: that node was removed when the
+> scenario presets were deleted. This reference file predates the healthcare and governance/evidence
+> work; the authoritative, machine-readable structure is `NODE_REGISTRY` in `src/simulation/bn.ts`,
+> which the node count and the Simulation Lab's model tab are derived from.
 
 `observedStateFor` is the function that makes a node "observable". Nodes it does
 **not** handle (`Aggregate*`, `Inflation`, `EmploymentRateBand`,

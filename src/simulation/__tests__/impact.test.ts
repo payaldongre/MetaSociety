@@ -26,7 +26,7 @@ function fixture(overrides: Partial<Record<MetricKey, number>> = {}): Simulation
   const uncertainty = Object.fromEntries(
     METRICS.map((m) => [
       m,
-      { seedCount: 12, probabilityImproved: 0.92, probabilityChanged: 0.9, medianDelta: 1, p05Delta: -0.2, p95Delta: 2.2 },
+      { seedCount: 12, shareImproved: 0.92, shareChanged: 0.9, medianDelta: 1, p05Delta: -0.2, p95Delta: 2.2 },
     ]),
   ) as SimulationResult["uncertainty"];
   return {

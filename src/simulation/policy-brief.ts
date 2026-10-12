@@ -145,6 +145,21 @@ export interface PolicyBrief {
   channelIds: string[];
 }
 
+/**
+ * Thrown when a policy brief fails a blocking governance / budget / timeline
+ * requirement. Callers (the engine, the UI) surface `.message`; `.feasibility`
+ * carries the full structured reason so an evaluator sees exactly which gate
+ * blocked the policy.
+ */
+export class PolicyFeasibilityError extends Error {
+  readonly feasibility: PolicyFeasibility;
+  constructor(message: string, feasibility: PolicyFeasibility) {
+    super(message);
+    this.name = "PolicyFeasibilityError";
+    this.feasibility = feasibility;
+  }
+}
+
 export interface PolicyFeasibility {
   status: FeasibilityStatus;
   /** A policy with blockers must not reach the engine. */

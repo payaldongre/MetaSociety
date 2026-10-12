@@ -24,7 +24,7 @@ export function magnitudeCalibrationFor(_metric: MetricKey): CalibrationStatus {
  */
 export function directionStrengthFromEnsemble(u: MetricUncertainty): EvidenceStrength {
   if (u.seedCount <= 1) return "uncalibrated";
-  const agreement = Math.max(u.probabilityImproved, 1 - u.probabilityImproved);
+  const agreement = Math.max(u.shareImproved, 1 - u.shareImproved);
   if (agreement >= 0.9) return "moderate";
   if (agreement >= 0.7) return "limited";
   return "uncalibrated";
@@ -54,8 +54,8 @@ export interface MetricAssessment {
   unit: string;
   directionStrength: EvidenceStrength;
   magnitudeCalibration: CalibrationStatus;
-  /** Share of the ensemble on which the metric moved toward improvement. */
-  probabilityImproved: number;
+  /** Share of the seed ensemble on which the metric moved toward improvement. */
+  shareImproved: number;
   /** The model ensemble interval (NOT a statistical confidence interval). */
   ensembleInterval: [number, number];
   headline: string;
@@ -87,7 +87,7 @@ export function assessMetric(result: SimulationResult, metric: MetricKey): Metri
     unit,
     directionStrength,
     magnitudeCalibration,
-    probabilityImproved: u.probabilityImproved,
+    shareImproved: u.shareImproved,
     ensembleInterval: [u.p05Delta, u.p95Delta],
     headline: `${phrase} Direction evidence: ${directionStrength}. Magnitude calibration: ${magnitudeCalibration}.`,
   };
